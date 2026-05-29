@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { supabase } from './lib/supabase'
+import { supabase, supabaseConfigError } from './lib/supabase'
 
 // 기반 세션 검증 화면: Supabase 직결 + FastAPI 헬스체크가 동작하는지 확인한다.
 // (실제 플로우 화면은 PRD 4.x 세션에서 구현)
@@ -8,6 +8,12 @@ const dbState = ref({ status: 'loading', message: '', buildings: [] })
 const apiState = ref({ status: 'loading', message: '' })
 
 async function checkSupabase() {
+  // env 미설정 시 supabase 는 null — 화면이 깨지지 않게 에러 상태로 안내한다.
+  if (!supabase) {
+    dbState.value = { status: 'error', message: supabaseConfigError, buildings: [] }
+    return
+  }
+
   // buildings 와 집계 View(building_stats) 를 함께 조회해 연결·집계 동작 검증
   const { data: buildings, error } = await supabase
     .from('buildings')

@@ -1,6 +1,6 @@
 # Butler — 임대인 건물관리 앱 (PoC)
 
-> 스택·아키텍처·컨벤션·데이터 모델·범위는 `CLAUDE .md`, 기능 명세는 `docs/Butler_PRD.md` 참조.
+> 스택·아키텍처·컨벤션·데이터 모델·범위는 `CLAUDE.md`, 기능 명세는 `docs/Butler_PRD.md` 참조.
 
 ## 구조
 ```

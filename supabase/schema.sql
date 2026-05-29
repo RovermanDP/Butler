@@ -140,13 +140,13 @@ select
   b.id                                                                              as building_id,
   b.name,
   b.unit_count,
-  count(*) filter (where c.status = '계약중')                                       as occupied_units,
+  count(distinct c.unit_no) filter (where c.status = '계약중')                      as occupied_units,        -- 호실 기준(같은 호실 활성 계약 중복 방어)
   trunc(
-    count(*) filter (where c.status = '계약중')::numeric
+    count(distinct c.unit_no) filter (where c.status = '계약중')::numeric
       / nullif(b.unit_count, 0) * 100, 1)                                           as occupancy_rate,        -- 입주율 % (와이어프레임 표기에 맞춰 1자리 절사: 15/16=93.7)
-  count(*) filter (where c.status = '계약중' and c.lease_type = '월세')             as wolse_count,           -- 월세 세대
-  count(*) filter (where c.status = '계약중' and c.lease_type = '전세')             as jeonse_count,          -- 전세 세대
-  b.unit_count - count(*) filter (where c.status = '계약중')                        as vacant_count,          -- 공실
+  count(distinct c.unit_no) filter (where c.status = '계약중' and c.lease_type = '월세') as wolse_count,       -- 월세 세대
+  count(distinct c.unit_no) filter (where c.status = '계약중' and c.lease_type = '전세') as jeonse_count,      -- 전세 세대
+  b.unit_count - count(distinct c.unit_no) filter (where c.status = '계약중')        as vacant_count,          -- 공실
   coalesce(sum(c.deposit) filter (where c.status = '계약중'), 0)                    as deposit_total,         -- 총 보증금
   coalesce(sum(c.monthly_rent) filter
     (where c.status = '계약중' and c.lease_type = '월세'), 0)                       as rental_income,         -- 임대수익(월세 합)
