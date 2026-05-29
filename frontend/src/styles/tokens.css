@@ -1,0 +1,61 @@
+/* ============================================================
+   Butler 디자인 토큰 (CLAUDE.md / 와이어프레임 :root 기준)
+   ⚠ 와이어프레임의 어두운 보드 배경·폰 목업·커넥터는 발표용 장식 → 앱에 옮기지 말 것.
+   가져오는 것은 폰 화면 내부 구성 + 아래 토큰뿐.
+   ============================================================ */
+:root {
+  /* 텍스트 */
+  --ink: #1e2630;
+
+  /* mint (주색) */
+  --mint: #3ecca0;
+  --mint-deep: #2bb489;
+  --mint-soft: #e6f8f1;
+
+  /* blue (스와이프·강조) */
+  --blue: #4a7dff;
+  --blue-soft: #e8eeff;
+
+  /* red (에러·미납) */
+  --red: #f2547d;
+  --red-soft: #fde7ee;
+  --rose: #cd7b74;
+
+  /* amber (즐겨찾기·증빙) */
+  --amber: #c8a23b;
+  --amber-soft: #fbf1da;
+
+  /* gray 1~7 */
+  --gray-1: #f2f4f6;
+  --gray-2: #e6e9ed;
+  --gray-3: #c7cdd4;
+  --gray-4: #9aa4af;
+  --gray-5: #6b7682;
+  --gray-6: #4f5a66;
+  --gray-7: #3a4452;
+
+  /* radius */
+  --r-card: 18px;
+  --r-sheet: 24px;
+  --r-input: 13px;
+  --r-button: 14px;
+  --r-promo: 16px;
+  --r-tag: 8px;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: var(--ink);
+  background: #fff; /* 앱 화면 배경 흰색 */
+}
