@@ -1,182 +1,236 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { supabase, supabaseConfigError } from './lib/supabase'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { fetchBuildings } from './lib/buildings'
+import EmptyState from './views/EmptyState.vue'
+import BuildingRegister from './views/BuildingRegister.vue'
+import BuildingList from './views/BuildingList.vue'
+import BuildingManageSheet from './components/BuildingManageSheet.vue'
 
-// 기반 세션 검증 화면: Supabase 직결 + FastAPI 헬스체크가 동작하는지 확인한다.
-// (실제 플로우 화면은 PRD 4.x 세션에서 구현)
-const dbState = ref({ status: 'loading', message: '', buildings: [] })
-const apiState = ref({ status: 'loading', message: '' })
+// Flow A — 온보딩·건물 등록 (PRD 4.1).
+// 빈 상태 → 건물 관리 모달 → (세입자 차단 분기) → 건물 등록 → 목록(화면 5) 진입.
+// 가드(세입자 등록 차단)는 별도 API 없이 buildings.length === 0 으로 프론트에서 판단.
+//
+// 화면 라우팅 계약(Flow B 가 이어붙일 지점):
+//   'loading' 시작 → 조회 후 건물 있으면 'list', 없으면 'empty'.
+//   'list' 의 건물 카드 클릭 → (Flow B) 'detail' 상태로 단일 건물 4탭 진입 예정.
+//   buildings 배열이 목록/가드/카운트의 단일 소스.
+const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'register' | 'error'
+const buildings = ref([])
+const loadError = ref('')
 
-async function checkSupabase() {
-  // env 미설정 시 supabase 는 null — 화면이 깨지지 않게 에러 상태로 안내한다.
-  if (!supabase) {
-    dbState.value = { status: 'error', message: supabaseConfigError, buildings: [] }
-    return
-  }
+const sheetOpen = ref(false)
 
-  // buildings 와 집계 View(building_stats) 를 함께 조회해 연결·집계 동작 검증
-  const { data: buildings, error } = await supabase
-    .from('buildings')
-    .select('id, name, address, unit_count, is_favorite')
-    .order('name')
+// 등록 직후 목록 상단 성공 배너
+const flash = ref('')
+let flashTimer = null
 
-  if (error) {
-    dbState.value = { status: 'error', message: error.message, buildings: [] }
-    return
-  }
+// 모달 토스트/강조 상태 (화면 2a)
+const tenantTapped = ref(false)
+const toast = ref('')
+const toastKind = ref('error')
+let toastTimer = null
 
-  const { data: stats, error: statErr } = await supabase
-    .from('building_stats')
-    .select('building_id, occupancy_rate, rental_income, vacant_count')
-
-  if (statErr) {
-    dbState.value = { status: 'error', message: statErr.message, buildings }
-    return
-  }
-
-  const statById = new Map(stats.map((s) => [s.building_id, s]))
-  dbState.value = {
-    status: 'ok',
-    message: `건물 ${buildings.length}곳 · 집계 View 정상`,
-    buildings: buildings.map((b) => ({ ...b, stat: statById.get(b.id) })),
-  }
+function showToast(message, kind = 'error') {
+  toast.value = message
+  toastKind.value = kind
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toast.value = ''
+    tenantTapped.value = false
+  }, 2800)
 }
 
-async function checkApi() {
+// 건물 목록 로드 → 라우팅 결정. 실패는 삼키지 않고 'error' 화면으로 노출(재시도 제공).
+async function loadBuildings() {
+  screen.value = 'loading'
+  loadError.value = ''
   try {
-    const res = await fetch('/api/health')
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const json = await res.json()
-    apiState.value = { status: 'ok', message: json.service ?? 'ok' }
+    buildings.value = await fetchBuildings()
+    screen.value = buildings.value.length ? 'list' : 'empty'
   } catch (e) {
-    // 백엔드 미기동 시에도 화면은 깨지지 않게 명확한 메시지로 처리
-    apiState.value = { status: 'error', message: e.message }
+    loadError.value = e.message
+    screen.value = 'error'
   }
 }
 
-function fmtWon(n) {
-  return `${Number(n ?? 0).toLocaleString('ko-KR')} 원`
+onMounted(loadBuildings)
+onUnmounted(() => {
+  clearTimeout(toastTimer)
+  clearTimeout(flashTimer)
+})
+
+function openSheet() {
+  sheetOpen.value = true
 }
 
-onMounted(() => {
-  checkSupabase()
-  checkApi()
-})
+function closeSheet() {
+  sheetOpen.value = false
+  toast.value = ''
+  tenantTapped.value = false
+  clearTimeout(toastTimer)
+}
+
+function onSelectBuilding() {
+  sheetOpen.value = false
+  toast.value = ''
+  tenantTapped.value = false
+  screen.value = 'register'
+}
+
+function onSelectTenant() {
+  if (buildings.value.length === 0) {
+    // 화면 2a — 건물 없이 세입자 등록 차단
+    tenantTapped.value = true
+    showToast('❗ 등록된 건물이 없습니다. 건물을 등록해주세요', 'error')
+    return
+  }
+  // 건물이 있는 경우: 세입자 등록은 Flow A 범위 밖 → 안내만 한다.
+  showToast('세입자 등록은 다음 단계에서 제공됩니다', 'info')
+}
+
+function onRegistered(building) {
+  buildings.value.unshift(building) // 최신 등록이 목록 상단
+  closeSheet()
+  screen.value = 'list' // 등록 성공 → 목록(화면 5) 자동 진입
+  flash.value = '건물이 등록되었습니다'
+  clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => (flash.value = ''), 2800)
+}
+
+function backToList() {
+  // 등록 화면에서 뒤로: 건물이 있으면 목록, 없으면 빈 상태로 복귀
+  screen.value = buildings.value.length ? 'list' : 'empty'
+}
 </script>
 
 <template>
-  <main class="screen">
-    <header class="head">
-      <h1>Butler</h1>
-      <p class="sub">기반 세션 연결 점검</p>
-    </header>
+  <div class="app">
+    <!-- 로딩: 건물 조회 중 -->
+    <div v-if="screen === 'loading'" class="state">
+      <div class="spinner" aria-hidden="true"></div>
+      <p>불러오는 중…</p>
+    </div>
 
-    <section class="card">
-      <div class="row">
-        <span class="label">Supabase (DB·집계)</span>
-        <span :class="['badge', dbState.status]">{{ dbState.status }}</span>
-      </div>
-      <p class="msg">{{ dbState.message }}</p>
+    <!-- 에러: 조회 실패(네트워크/환경) — '건물 없음'으로 오인시키지 않고 재시도 제공 -->
+    <div v-else-if="screen === 'error'" class="state">
+      <p class="emoji">😵</p>
+      <p class="title">건물 정보를 불러오지 못했습니다</p>
+      <p class="detail">{{ loadError }}</p>
+      <button class="retry" type="button" @click="loadBuildings">다시 시도</button>
+    </div>
 
-      <ul v-if="dbState.buildings.length" class="list">
-        <li v-for="b in dbState.buildings" :key="b.id">
-          <div class="b-name">{{ b.is_favorite ? '★ ' : '' }}{{ b.name }}</div>
-          <div class="b-meta">{{ b.address }} · {{ b.unit_count }}세대</div>
-          <div v-if="b.stat" class="b-stat">
-            입주율 {{ b.stat.occupancy_rate }}% · 공실 {{ b.stat.vacant_count }} ·
-            임대수익 {{ fmtWon(b.stat.rental_income) }}
-          </div>
-        </li>
-      </ul>
-    </section>
+    <EmptyState v-else-if="screen === 'empty'" @open-sheet="openSheet" />
+    <BuildingRegister
+      v-else-if="screen === 'register'"
+      @back="backToList"
+      @submitted="onRegistered"
+    />
+    <BuildingList v-else-if="screen === 'list'" :buildings="buildings" :flash="flash" />
 
-    <section class="card">
-      <div class="row">
-        <span class="label">FastAPI (AI·알림톡)</span>
-        <span :class="['badge', apiState.status]">{{ apiState.status }}</span>
-      </div>
-      <p class="msg">{{ apiState.message }}</p>
-    </section>
-  </main>
+    <BuildingManageSheet
+      :open="sheetOpen"
+      :tenant-tapped="tenantTapped"
+      :toast="toast"
+      :toast-kind="toastKind"
+      @close="closeSheet"
+      @select-building="onSelectBuilding"
+      @select-tenant="onSelectTenant"
+    />
+
+    <!-- 목록 화면에서도 FAB 로 추가 등록 가능 -->
+    <button
+      v-if="screen === 'list'"
+      class="fab"
+      type="button"
+      aria-label="건물·세입자 등록"
+      @click="openSheet"
+    >
+      +
+    </button>
+  </div>
 </template>
 
 <style scoped>
-.screen {
+/* 모바일 세로 화면. 폰 목업 프레임은 쓰지 않고 화면 내부 구성만 재현한다(CLAUDE.md). */
+.app {
+  position: relative;
   max-width: 420px;
+  height: 100dvh;
   margin: 0 auto;
-  padding: 20px 16px 40px;
-  min-height: 100vh;
-}
-.head h1 {
-  margin: 0;
-  font-size: 28px;
-  color: var(--mint-deep);
-}
-.sub {
-  margin: 4px 0 20px;
-  color: var(--gray-5);
-  font-size: 14px;
-}
-.card {
-  border: 1px solid var(--gray-2);
-  border-radius: var(--r-card);
-  padding: 16px;
-  margin-bottom: 14px;
-}
-.row {
+  background: #fff;
   display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 로딩·에러 공통 중앙 정렬 상태 화면 */
+.state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--gray-5);
 }
-.label {
-  font-weight: 600;
+.state .emoji {
+  font-size: 34px;
 }
-.badge {
+.state .title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.state .detail {
   font-size: 12px;
-  padding: 3px 10px;
-  border-radius: var(--r-tag);
-  text-transform: uppercase;
-}
-.badge.ok {
-  background: var(--mint-soft);
-  color: var(--mint-deep);
-}
-.badge.error {
-  background: var(--red-soft);
-  color: var(--red);
-}
-.badge.loading {
-  background: var(--gray-1);
-  color: var(--gray-5);
-}
-.msg {
-  margin: 8px 0 0;
-  font-size: 13px;
-  color: var(--gray-5);
+  color: var(--gray-4);
   word-break: break-all;
+  max-width: 280px;
 }
-.list {
-  list-style: none;
-  margin: 14px 0 0;
-  padding: 0;
-}
-.list li {
-  padding: 12px;
-  border-radius: var(--r-tag);
-  background: var(--gray-1);
-  margin-bottom: 8px;
-}
-.b-name {
-  font-weight: 600;
-}
-.b-meta {
-  font-size: 12px;
-  color: var(--gray-5);
-  margin-top: 2px;
-}
-.b-stat {
-  font-size: 12px;
-  color: var(--mint-deep);
+.state .retry {
   margin-top: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--r-button);
+  padding: 11px 22px;
+  font-weight: 800;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.spinner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid var(--gray-2);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 목록 화면 추가 등록용 FAB (빈 상태 FAB 와 동일 스펙, 펄스는 없음) */
+.fab {
+  position: absolute;
+  right: 15px;
+  bottom: 64px;
+  width: 46px;
+  height: 46px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  cursor: pointer;
+  box-shadow: 0 10px 22px -8px rgba(58, 110, 165, 0.8);
+  z-index: 6;
 }
 </style>

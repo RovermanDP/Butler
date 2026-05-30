@@ -34,18 +34,21 @@ AI 수선비 분담과 자동 알림톡으로 반복 업무·분쟁을 줄인다
 - 통화 표시: `1,850,000 원` 형식. 비율: 정수 % (예: 70).
 - 컴포넌트: 화면 단위 + 재사용 카드/태그 컴포넌트 분리.
 
-## 디자인 토큰 (와이어프레임 기준 — 똑같이 재현)
-> 화면별 레이아웃·구성요소는 PRD 4·5장 + `docs/Butler_Wireframe.html`(해당 화면만) 참조.
-- **폰트:** Pretendard. 앱 화면 배경 흰색(#fff), 본문 텍스트 `--ink #1E2630`.
+## 디자인 토큰 (Butler Design System — override 기준 = 실제 렌더링)
+> 주색은 단일 Slate Blue. White & Light Gray 베이스, 얇은 선, radius 10px 중심.
+> ⚠ 파일 위쪽 민트(#3ECCA0) :root는 폐기된 구버전. 304줄 override가 실제 적용값.
+- **폰트:** Pretendard. 화면 배경 흰색(#fff), 본문 텍스트 --ink #1F1F24.
 - **팔레트:**
-  - mint(주색) `#3ECCA0` / deep `#2BB489` / soft `#E6F8F1`
-  - blue(스와이프·강조) `#4A7DFF` / soft `#E8EEFF`
-  - red(에러·미납) `#F2547D` / soft `#FDE7EE` · rose `#CD7B74`
-  - amber(즐겨찾기·증빙) `#C8A23B` / soft `#FBF1DA`
-  - gray 1~7: `#F2F4F6 #E6E9ED #C7CDD4 #9AA4AF #6B7682 #4F5A66 #3A4452`
-- **radius:** 카드 18 / 바텀시트 24(상단) / 입력 13 / 버튼 14 / 프로모션 16 / 태그·뱃지 8 / FAB 원형.
-- **상태 색 매핑:** 완납·정상=mint, 미납·에러=red, 스와이프 탭 활성=blue, 즐겨찾기·증빙=amber.
-- ⚠ **보드 CSS 금지:** 와이어프레임의 어두운 보드 배경·폰 목업 프레임·화살표 커넥터·주석은 *발표용 장식*이다. 앱에 옮기지 말 것. 가져올 것은 폰 화면(`.phone .scr`) 내부 구성과 위 `:root` 토큰뿐.
+  - accent(주색·단일 포인트) #3A6EA5 / deep #2A5689 / soft #E3ECF6
+  - ok(완납·정상) #1A9C66 / soft #DFF3E8
+  - danger(에러·미납) #D63B3B / soft #FBE0E0
+  - warn(즐겨찾기·증빙) #C2870A / soft #FBECD4
+  - gray 1~7: #F4F4F7 #E6E6EC #D4D4DC #A8A8B3 #777783 #5E5E68 #3F3F48
+- **radius:** 10px를 중심 기조로. (카드·입력·버튼 모두 10 안팎으로 통일)
+- **선:** 얇은 1px, --line #E6E6EC.
+- **그림자:** 매우 약하게. 0 4px 16px rgba(31,31,36,.04), 0 1px 2px rgba(31,31,36,.04)
+- **상태 색 매핑:** 정상·완납=ok(green) / 미납·에러=danger(red) / 즐겨찾기·증빙=warn(amber) / 모든 강조·버튼=accent(slate blue 단일).
+- ⚠ 보드 CSS 금지: 어두운 보드 배경·폰 목업·화살표 커넥터·주석은 발표용 장식. 앱에 옮기지 말 것.
 
 
 - **기존 패턴 우선:** 새 코드 전에 유사 기존 구현(폴더 구조·네이밍·레이어 분리)을 먼저 보고 그대로 따른다. 동작만 하고 구조 안 맞는 코드 금지.
