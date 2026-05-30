@@ -13,14 +13,26 @@ butler/
 
 ## 1. Supabase 준비
 1. [supabase.com](https://supabase.com) 에서 프로젝트 생성.
-2. **SQL Editor** 에서 순서대로 실행:
-   - `supabase/schema.sql` (테이블 + 집계 View)
-   - `supabase/seed.sql` (와이어프레임 시드 데이터)
+2. **SQL Editor** 에서 상황에 맞는 경로 하나를 선택해 실행:
+
+   **(A) 새로 시작 / 데모용 (기존 데이터 없음·날려도 됨)**
+   - `supabase/schema.sql` — ⚠ **전체 drop 후 재생성(기존 데이터 삭제)**. 테이블·CHECK 제약·집계 View.
+   - `supabase/seed.sql` — 와이어프레임 시드 데이터(비파괴·idempotent라 여러 번 실행해도 중복 없음).
+
+   **(B) 이미 운영 중 / Flow A 건물 데이터 보존 (절대 삭제 금지)**
+   - `supabase/migrate_tenant_fields.sql` **하나만** 실행 — drop/truncate 없이 세입자 등록 신규
+     컬럼·`contractors`·CHECK 제약만 추가(재실행 안전).
+   - ❌ 이 경우 `schema.sql`은 실행하지 말 것(전체 삭제됨).
+   - (선택) 데모 데이터도 함께 보고 싶으면 `seed.sql`을 추가 실행 — 비파괴라 기존 건물을
+     지우지 않고 데모 건물(01~03호점·김동락)만 덧입힌다.
+
 3. **Project Settings → API** 에서 키 복사:
    - `URL`, `anon public` → 프론트엔드
    - `service_role` → 백엔드
 
 > ⚠ PoC 전용: 단일 임대인 기준이라 RLS 미사용(전체 허용). 실서비스 전환 시 RLS 정책 추가.
+> ⚠ enum/조건부 필수값은 DB CHECK 제약으로 방어한다(tenant_type·lease_type·proof_kind,
+>    전세=보증금 필수·월세 없음, 사업자=휴대폰 필수 등). 잘못된 값 직결 insert는 거부된다.
 
 ## 2. 프론트엔드 (Vue + Vite)
 ```bash
