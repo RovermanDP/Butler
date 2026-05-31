@@ -6,6 +6,7 @@ import BuildingRegister from './views/BuildingRegister.vue'
 import BuildingList from './views/BuildingList.vue'
 import BuildingDetail from './views/BuildingDetail.vue'
 import TenantRegister from './views/TenantRegister.vue'
+import RepairAllocation from './views/RepairAllocation.vue'
 import BuildingManageSheet from './components/BuildingManageSheet.vue'
 import TenantMethodSheet from './components/TenantMethodSheet.vue'
 
@@ -16,10 +17,11 @@ import TenantMethodSheet from './components/TenantMethodSheet.vue'
 //
 // 화면 라우팅: 'loading' → 조회 후 건물 있으면 'list', 없으면 'empty'.
 //   'list' 카드 클릭 → 'detail'(선택 건물 정보 탭). buildings 배열이 목록/가드/카운트 단일 소스.
-const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'detail' | 'register' | 'tenant-register' | 'error'
+const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'detail' | 'register' | 'tenant-register' | 'repair-allocation' | 'error'
 const buildings = ref([])
 const stats = ref({}) // building_id → 집계 지표(목록 카드·정보 탭 공용)
 const selectedBuilding = ref(null) // 정보 탭(화면 4) 대상 건물
+const selectedExpense = ref(null) // Flow C(AI 수선비 분담) 대상 지출 항목(화면 13·14)
 const loadError = ref('')
 
 // 세입자 등록 활성 여부(화면 2 vs 화면 9 분기). 건물이 1개 이상이면 활성.
@@ -182,9 +184,11 @@ function onTenantTeaser(label) {
   showNotice(`${label}은(는) 추후 제공 예정입니다`)
 }
 
-// 지출 탭 수리비 'AI 분담 ▸' → Flow C(AI 수선비 분담) 진입점. Flow C 구현 시 화면 전환으로 교체.
+// 지출 탭 수리비 'AI 분담 ▸' → Flow C(AI 수선비 분담, 화면 13·14) 진입.
+// selectedBuilding 은 유지되므로 결과 화면에서 뒤로 가면 상세(지출 탭)로 복귀한다.
 function openRepairAllocation(expense) {
-  showNotice(`${expense.title} · AI 수선비 분담은 다음 단계(Flow C)에서 제공됩니다`)
+  selectedExpense.value = expense
+  screen.value = 'repair-allocation'
 }
 
 function onRegistered(building) {
@@ -247,6 +251,11 @@ function backToList() {
       :preselect-building-id="selectedBuilding?.id ?? ''"
       @back="backFromTenant"
       @done="onTenantDone"
+    />
+    <RepairAllocation
+      v-else-if="screen === 'repair-allocation' && selectedExpense"
+      :expense="selectedExpense"
+      @back="screen = 'detail'"
     />
 
     <BuildingManageSheet

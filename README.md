@@ -43,14 +43,68 @@ npm run dev                  # http://localhost:5173
 ```
 
 ## 3. 백엔드 (FastAPI)
-```bash
-cd backend
-python -m venv .venv
-.venv\Scripts\activate       # (Windows PowerShell)
-pip install -r requirements.txt
-cp .env.example .env         # SUPABASE_* / (Flow C 단계에서 ANTHROPIC_API_KEY) 채우기
-uvicorn app.main:app --reload --port 8000   # http://localhost:8000/api/health
+
+> AI 수선비 분담(Flow C)·알림톡 mock(Flow D) 등 커스텀 로직 전용. CRUD·집계는 프론트가
+> Supabase 직결로 처리하므로 백엔드 없이도 대부분 화면은 뜨지만, **AI 분담 화면(13·14)은
+> 백엔드 서버가 떠 있어야 동작한다.**
+
+Windows PowerShell 기준 단계별 실행:
+
+**① 백엔드 폴더로 이동**
+```powershell
+cd C:\Butler\backend
 ```
+
+**② 가상환경 생성 (최초 1회만)**
+```powershell
+python -m venv .venv
+```
+
+**③ 가상환경 활성화 (셸을 새로 열 때마다)**
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+- 실행 정책 오류(`...because running scripts is disabled...`)가 나면 한 번만:
+  `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` 후 다시 ③.
+- 프롬프트 앞에 `(.venv)` 가 보이면 활성화 성공.
+
+**④ 의존성 설치 (최초 1회 · requirements 변경 시)**
+```powershell
+pip install -r requirements.txt
+```
+
+**⑤ 환경변수 파일 준비 (최초 1회)**
+```powershell
+Copy-Item .env.example .env
+```
+- `.env` 를 열어 채운다:
+  - `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` — Supabase **Project Settings → API** 의 service_role 키.
+  - `ANTHROPIC_API_KEY` — Console 발급 키. **비워둬도 대표 시나리오(냉장고/노후/7년 → 70:30)는
+    동작**(서버측 고정값). 그 외 임의 입력의 실시간 산출이 필요할 때만 채운다.
+  - `FRONTEND_ORIGIN` — 기본 `http://localhost:5173` (Vite). 그대로 두면 됨.
+
+> ⚠ **키 환경 분리(과금 주의):** `ANTHROPIC_API_KEY` 는 이 백엔드 실행 셸의 `.env` 에만 둔다.
+> 같은 셸에서 Claude Code 를 함께 돌리면 그 키가 구독 인증보다 우선 적용돼 API 가 과금될 수 있다.
+> 빌드/코딩용 터미널과 앱 실행용 터미널을 분리할 것.
+
+**⑥ 서버 실행**
+```powershell
+uvicorn app.main:app --reload --port 8000
+```
+- `--reload` 는 코드 저장 시 자동 재시작(개발용). 종료는 `Ctrl + C`.
+- 이 창은 켜둔 채로 두고, 프론트(`npm run dev`)는 **다른 터미널**에서 실행한다.
+
+**⑦ 실행 확인**
+- 헬스체크: 브라우저로 <http://localhost:8000/api/health> →
+  `{"status":"ok", "anthropic_configured": …, "model": "claude-haiku-4-5-20251001"}`.
+- AI 분담 엔드포인트(대표 시나리오, 키 없이 동작):
+  ```powershell
+  curl.exe -X POST http://localhost:8000/api/repair-allocation `
+    -H "Content-Type: application/json" `
+    --data-raw '{\"item\":\"201호 냉장고 수리\",\"cost\":165000,\"cause\":\"노후·자연마모\",\"usage_years\":7}'
+  ```
+  → `landlord_ratio:70 / tenant_ratio:30 / landlord_amount:115500 / tenant_amount:49500` + 근거 2종.
+- API 문서(Swagger): <http://localhost:8000/docs> 에서 직접 호출해 볼 수도 있다.
 
 ## 4. 연결 확인
 프론트 첫 화면(연결 점검)에서 다음을 확인:
