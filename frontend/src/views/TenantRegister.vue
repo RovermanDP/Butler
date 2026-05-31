@@ -1,12 +1,16 @@
 <script setup>
-import { reactive, ref, computed } from 'vue'
+import { reactive, ref, computed, nextTick } from 'vue'
 import { addOneYear } from '../lib/contractDates'
+import { monthlyTotal } from '../lib/contractAmount'
+import { formatWon } from '../lib/format'
 import DatePickerModal from '../components/DatePickerModal.vue'
 
-// 화면 10a~10d — Flow E Step 1 · 세입자 정보.
-// 한 화면 세로 스크롤이며 개인/사업자 토글로 하단 섹션이 분기된다(PRD 4.5 E-2).
-// 이 세션 범위 = Step1 뿐. [다음]은 Step2(계약 정보) 진입점만 잡아두고 안내한다.
-// 결정적 계산(종료일 +1년·말일 보정)은 lib/contractDates 에 두고 여기선 호출만 한다(SRP·OSoT).
+// 화면 10a~10h — Flow E 세입자 등록 위저드 · Step1(세입자 정보) + Step2(계약 정보).
+// 한 '세입자 등록' 화면 안에서 스텝만 전환한다(tbar·stepdots·하단 액션바 chrome 공유).
+//   Step1(10a~10d): 개인/사업자 토글로 하단 섹션 분기(PRD 4.5 E-2).
+//   Step2(10e~10h): 월세/전세 토글로 월세 row 동적 추가·제거 + 매월 입금 예정 총액 자동 합산(E-3).
+// 이 세션 범위 = Step1·Step2. [다음]은 Step3(납부 정보) 진입점만 잡아두고 안내한다.
+// 결정적 계산은 LLM이 아닌 lib 으로 분리(SRP·OSoT): 날짜=contractDates, 매월 총액=contractAmount.
 const props = defineProps({
   // 건물 드롭다운 소스(App 의 buildings 단일 소스 그대로 전달).
   buildings: { type: Array, default: () => [] },
@@ -16,7 +20,8 @@ const props = defineProps({
 
 const emit = defineEmits(['back', 'next'])
 
-// 토글 전환 시에도 공통 입력값은 유지되도록 한 reactive 폼에 모은다(개인/사업자 섹션만 렌더 분기).
+// 토글 전환 시에도 공통 입력값은 유지되도록 모든 스텝의 입력을 한 reactive 폼에 모은다
+// (개인/사업자·월세/전세 전환 시 전용 필드만 렌더 분기, 입력값은 보존).
 const form = reactive({
   buildingId: props.preselectBuildingId || '',
   unitNo: '',
@@ -32,12 +37,28 @@ const form = reactive({
   bizName: '',
   managerName: '',
   bizPhone: '',
+  // Step2 계약 정보 — 금액은 콤마 없는 숫자 문자열('')로 보관, 합산 시 Number 로 변환한다.
+  leaseType: '월세', // '월세' | '전세' (월세=월세 필수·보증금 선택 / 전세=보증금 필수·월세 row 제거)
+  deposit: '',
+  monthlyRent: '',
+  maintenanceFee: '',
+  etcFee1: '',
+  etcFee2: '',
+  // 항목별 부가세 포함 플래그 — 켜지면 매월 총액 합산 시 ×1.1.
+  rentVat: false,
+  maintenanceVat: false,
+  etc1Vat: false,
+  etc2Vat: false,
 })
+
+// 위저드 스텝(1=세입자 정보, 2=계약 정보). 본문 스크롤 위치 리셋용 ref 도 함께 둔다.
+const step = ref(1)
+const bodyEl = ref(null)
 
 // 계약기간 캘린더 모달 대상: null | 'start' | 'end'
 const picker = ref(null)
 const submitAttempted = ref(false)
-const nextNotice = ref('') // Step2 미구현 안내 토스트
+const nextNotice = ref('') // Step3 미구현 안내 토스트
 let noticeTimer = null
 
 const selectedBuilding = computed(() =>
@@ -85,6 +106,63 @@ function onFilePick(event) {
   form.contractFileName = file ? file.name : ''
 }
 
+// ===== Step2 계약 정보 =====
+function setLease(type) {
+  form.leaseType = type // 공통 금액 필드(관리비/기타비용) 유지, 월세 row만 렌더 분기
+}
+
+// 금액 입력 행 구성: 월세(월세계약 한정)·관리비·기타1·기타2. 각 행은 부가세 토글을 가진다.
+// 보증금은 부가세·합산 대상이 아니므로 이 목록과 별도로 렌더한다.
+const moneyRows = computed(() => {
+  const rows = []
+  if (form.leaseType === '월세') rows.push({ key: 'monthlyRent', vatKey: 'rentVat', label: '월세', req: true })
+  rows.push({ key: 'maintenanceFee', vatKey: 'maintenanceVat', label: '관리비' })
+  rows.push({ key: 'etcFee1', vatKey: 'etc1Vat', label: '기타비용1' })
+  rows.push({ key: 'etcFee2', vatKey: 'etc2Vat', label: '기타비용2' })
+  return rows
+})
+
+// 금액 입력: 숫자만 보관(form), 화면에는 천단위 콤마로 표시한다.
+function moneyDisplay(key) {
+  const n = Number(form[key])
+  return n > 0 ? n.toLocaleString('ko-KR') : ''
+}
+function onMoney(event, key) {
+  const digits = event.target.value.replace(/[^\d]/g, '').slice(0, 12) // 비숫자 제거 + 과도한 자리수 방어
+  form[key] = digits
+  event.target.value = digits ? Number(digits).toLocaleString('ko-KR') : ''
+}
+
+// 매월 입금 예정 총액(부가세 반영) — 계산은 lib/contractAmount 단일 출처를 호출만 한다.
+const total = computed(() =>
+  monthlyTotal({
+    leaseType: form.leaseType,
+    monthlyRent: form.monthlyRent,
+    rentVat: form.rentVat,
+    maintenanceFee: form.maintenanceFee,
+    maintenanceVat: form.maintenanceVat,
+    etcFee1: form.etcFee1,
+    etc1Vat: form.etc1Vat,
+    etcFee2: form.etcFee2,
+    etc2Vat: form.etc2Vat,
+  }),
+)
+
+// Step2 필수값: 월세계약=월세 필수 / 전세계약=보증금 필수(월세는 검증 대상 아님).
+const step2Errors = computed(() => {
+  const e = {}
+  if (form.leaseType === '월세') {
+    if (!(Number(form.monthlyRent) > 0)) e.monthlyRent = '월세를 입력해주세요'
+  } else {
+    if (!(Number(form.deposit) > 0)) e.deposit = '보증금을 입력해주세요'
+  }
+  return e
+})
+const isStep2Valid = computed(() => Object.keys(step2Errors.value).length === 0)
+function showErr2(key) {
+  return submitAttempted.value && !!step2Errors.value[key]
+}
+
 // 필수값 검증 — 토글 분기에 따라 다른 필드를 본다(단일 출처).
 const errors = computed(() => {
   const e = {}
@@ -109,21 +187,57 @@ function showErr(key) {
   return submitAttempted.value && !!errors.value[key]
 }
 
+// 스텝 전환 시 본문을 맨 위로 — 긴 폼에서 다음 스텝의 상단부터 보이게 한다.
+function scrollBodyTop() {
+  nextTick(() => bodyEl.value?.scrollTo({ top: 0 }))
+}
+
+// 상위로 넘길 payload — 라이브 폼은 토글 왕복 시 값 복원 UX 때문에 그대로 두되,
+// 전세 계약은 월세 항목이 폼에서 빠지므로 payload에서도 제거한다(PRD: 전세 monthly_rent=null).
+// 숨겨진 월세 잔존값이 Step3/저장 단계에서 전세 계약에 잘못 실리는 것을 방지.
+function buildPayload() {
+  const snapshot = JSON.parse(JSON.stringify(form))
+  if (snapshot.leaseType === '전세') {
+    snapshot.monthlyRent = ''
+    snapshot.rentVat = false
+  }
+  return snapshot
+}
+
+// [다음]: Step1 → 검증 후 Step2 진입 / Step2 → 검증 후 Step3 진입점 안내(차기 세션).
 function onNext() {
   submitAttempted.value = true
-  if (!isValid.value) return
-  // Step2(계약 정보)는 다음 세션 범위 — 진입점만 잡아두고 입력값을 상위로 넘긴다.
-  emit('next', JSON.parse(JSON.stringify(form)))
-  nextNotice.value = 'Step 1 입력 완료 — Step 2(계약 정보)는 다음 단계에서 제공됩니다'
+  if (step.value === 1) {
+    if (!isValid.value) return
+    step.value = 2
+    submitAttempted.value = false // 다음 스텝에서 에러 표시는 재시도부터
+    scrollBodyTop()
+    return
+  }
+  if (!isStep2Valid.value) return
+  // Step3(납부 정보)는 다음 세션 범위 — 진입점만 잡아두고 누적 입력값(정규화)을 상위로 넘긴다.
+  emit('next', buildPayload())
+  nextNotice.value = 'Step 2 입력 완료 — Step 3(납부 정보)는 다음 단계에서 제공됩니다'
   clearTimeout(noticeTimer)
   noticeTimer = setTimeout(() => (nextNotice.value = ''), 2800)
+}
+
+// [뒤로]/상단 ‹: Step2 → Step1 복귀 / Step1 → 위저드 종료(진입 직전 화면).
+function onBack() {
+  if (step.value === 2) {
+    step.value = 1
+    submitAttempted.value = false
+    scrollBodyTop()
+    return
+  }
+  emit('back')
 }
 </script>
 
 <template>
   <div class="scr">
     <div class="tbar">
-      <button class="ico back" type="button" aria-label="뒤로" @click="emit('back')">
+      <button class="ico back" type="button" aria-label="뒤로" @click="onBack">
         <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M15 18L9 12L15 6" />
         </svg>
@@ -132,17 +246,21 @@ function onNext() {
       <span class="ico"></span>
     </div>
 
-    <div class="body">
-      <!-- Step 헤더 + 진행 도트 -->
+    <div ref="bodyEl" class="body">
+      <!-- Step 헤더 + 진행 도트 (스텝에 따라 라벨·활성 도트 전환) -->
       <div class="step-head">
         <div>
-          <span class="step-tag">Step.01</span>
-          <div class="step-title">세입자 정보</div>
+          <span class="step-tag">{{ step === 1 ? 'Step.01' : 'Step.02' }}</span>
+          <div class="step-title">{{ step === 1 ? '세입자 정보' : '계약 정보' }}</div>
         </div>
-        <div class="stepdots"><i class="on"></i><i></i><i></i></div>
+        <div class="stepdots">
+          <i :class="{ on: step === 1 }"></i><i :class="{ on: step === 2 }"></i><i></i>
+        </div>
       </div>
       <div class="divider full"></div>
 
+      <!-- ===================== Step 1 · 세입자 정보 ===================== -->
+      <template v-if="step === 1">
       <!-- 건물 -->
       <label class="flab"><span class="req"></span>건물</label>
       <select
@@ -314,11 +432,71 @@ function onNext() {
         </span>
         {{ form.contractFileName || '계약서를 업로드 해보세요!' }}
       </label>
+      </template>
+
+      <!-- ===================== Step 2 · 계약 정보 (10e~10h) ===================== -->
+      <template v-else>
+        <!-- 계약형태 토글 (월세 기본 / 전세) -->
+        <label class="flab"><span class="req"></span>계약형태</label>
+        <div class="seg">
+          <button type="button" class="segbtn" :class="{ on: form.leaseType === '월세' }" @click="setLease('월세')">
+            월세
+          </button>
+          <button type="button" class="segbtn" :class="{ on: form.leaseType === '전세' }" @click="setLease('전세')">
+            전세
+          </button>
+        </div>
+
+        <!-- 보증금 — 월세: 선택 / 전세: 필수● (부가세·합산 대상 아님) -->
+        <label class="flab"><span v-if="form.leaseType === '전세'" class="req"></span>보증금</label>
+        <div class="fin money-row" :class="{ filled: form.deposit, err: showErr2('deposit') }">
+          <input
+            class="money-in"
+            type="text"
+            inputmode="numeric"
+            placeholder="보증금을 입력해주세요"
+            :value="moneyDisplay('deposit')"
+            @input="onMoney($event, 'deposit')"
+          />
+          <span class="won">원</span>
+        </div>
+        <p v-if="showErr2('deposit')" class="ferr">{{ step2Errors.deposit }}</p>
+
+        <!-- 월세(월세계약 한정)·관리비·기타비용1·2 — 각 행에 부가세 토글 -->
+        <template v-for="row in moneyRows" :key="row.key">
+          <label class="flab"><span v-if="row.req" class="req"></span>{{ row.label }}</label>
+          <div class="fin money-row" :class="{ filled: form[row.key], err: row.req && showErr2(row.key) }">
+            <input
+              class="money-in"
+              type="text"
+              inputmode="numeric"
+              placeholder="금액을 입력해주세요"
+              :value="moneyDisplay(row.key)"
+              @input="onMoney($event, row.key)"
+            />
+            <span class="won">원</span>
+            <button
+              type="button"
+              class="vat-toggle"
+              :class="{ on: form[row.vatKey] }"
+              :aria-pressed="form[row.vatKey]"
+              @click="form[row.vatKey] = !form[row.vatKey]"
+            >
+              <i class="vat-box" aria-hidden="true">✓</i>부가세
+            </button>
+          </div>
+          <p v-if="row.req && showErr2(row.key)" class="ferr">{{ step2Errors[row.key] }}</p>
+        </template>
+
+        <!-- 매월 입금 예정 총액 — 부가세 반영 자동 합산(읽기 전용 결과) -->
+        <label class="flab total-lab">매월 입금 예정 총액</label>
+        <div class="total-box">{{ formatWon(total) }}</div>
+      </template>
     </div>
 
     <!-- 하단 고정 액션바 -->
     <div class="formfoot">
-      <button class="ff-back" type="button" aria-label="뒤로" @click="emit('back')">
+      <button class="ff-back" type="button" aria-label="뒤로" @click="onBack">
         <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M15 18L9 12L15 6" />
         </svg>
@@ -326,7 +504,7 @@ function onNext() {
       <button class="ff-next" type="button" @click="onNext">다음</button>
     </div>
 
-    <!-- Step2 안내 토스트 -->
+    <!-- Step3 안내 토스트 -->
     <Transition name="notice">
       <div v-if="nextNotice" class="next-notice">{{ nextNotice }}</div>
     </Transition>
@@ -574,6 +752,93 @@ function onNext() {
 .segbtn.on {
   background: var(--accent-soft);
   color: var(--accent-deep);
+}
+
+/* Step2 금액 입력 행 — 입력 + 단위(원) + 부가세 토글이 한 줄에 들어간다. */
+.money-row {
+  gap: 8px;
+  border: 1px solid transparent;
+  padding: 4px 12px;
+}
+.money-row.filled {
+  background: #fff;
+  border-color: var(--accent);
+}
+.money-row.err {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.money-in {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  padding: 9px 0;
+  text-align: right;
+}
+.money-row.filled .money-in {
+  font-weight: 700;
+}
+.money-in::placeholder {
+  color: var(--gray-4);
+  font-weight: 400;
+  text-align: left;
+}
+.money-row .won {
+  font-size: 12px;
+  color: var(--gray-5);
+  flex: 0 0 auto;
+}
+.vat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--gray-5);
+  padding: 0 0 0 4px;
+}
+.vat-toggle.on {
+  color: var(--accent-deep);
+}
+.vat-box {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: var(--gray-3);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  font-style: normal;
+}
+.vat-toggle.on .vat-box {
+  background: var(--accent);
+}
+
+/* 매월 입금 예정 총액 — 합산 결과 강조 박스(accent soft) */
+.total-lab {
+  margin-top: 18px;
+}
+.total-box {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  border-radius: var(--r-input);
+  padding: 15px 14px;
+  font-size: 16px;
+  font-weight: 800;
 }
 
 /* 섹션 헤더(계약자/사업자/업로드) */
