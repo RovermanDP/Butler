@@ -182,14 +182,6 @@ function onTenantTeaser(label) {
   showNotice(`${label}은(는) 추후 제공 예정입니다`)
 }
 
-// 수납 탭(화면 7) 세입자 행 탭 → 세입자 상세 수납 sub-tab(6c). 진입점 계약은 여기서 고정한다.
-// 6c(TenantDetail)는 B-3 에서 완성되므로, 그때 이 핸들러를 화면 전환으로 교체하면 된다:
-//   selectedTenant.value = tenant; screen.value = 'tenant-detail'
-// B-3 TODO: 현재는 진입점이 살아 있음을 화면 레벨 안내로 알린다.
-function onOpenTenant(tenant) {
-  showNotice(`${tenant.name} · 세입자 상세는 다음 단계(B-3)에서 연결됩니다`)
-}
-
 // 지출 탭 수리비 'AI 분담 ▸' → Flow C(AI 수선비 분담) 진입점. Flow C 구현 시 화면 전환으로 교체.
 function openRepairAllocation(expense) {
   showNotice(`${expense.title} · AI 수선비 분담은 다음 단계(Flow C)에서 제공됩니다`)
@@ -248,7 +240,6 @@ function backToList() {
       @open-notifications="openNotifications"
       @teaser="onTenantTeaser"
       @open-repair="openRepairAllocation"
-      @open-tenant="onOpenTenant"
     />
     <TenantRegister
       v-else-if="screen === 'tenant-register'"

@@ -16,6 +16,7 @@ import { fetchTenantsWithPayments, fetchBuildingExpenses } from '../lib/detail'
 import TenantsTab from '../components/TenantsTab.vue'
 import PaymentsTab from '../components/PaymentsTab.vue'
 import ExpensesTab from '../components/ExpensesTab.vue'
+import TenantDetail from './TenantDetail.vue'
 
 const props = defineProps({
   building: { type: Object, required: true },
@@ -23,7 +24,7 @@ const props = defineProps({
   stat: { type: Object, default: null },
 })
 
-defineEmits(['back', 'open-sheet', 'open-notifications', 'teaser', 'open-repair', 'open-tenant'])
+const emit = defineEmits(['back', 'open-sheet', 'open-notifications', 'teaser', 'open-repair'])
 
 // 집계 미반영 시에도 화면이 깨지지 않도록 unit_count 기준 기본값을 채운다.
 const s = computed(
@@ -104,13 +105,45 @@ watch(
   () => props.building.id,
   () => {
     activeTab.value = 0
+    detailTenant.value = null // 건물 전환 시 열린 상세 닫기
     loadDetail()
   },
 )
+
+// ── 세입자 상세 오버레이(화면 6a/6b/6c + 6d) ─────────────
+// 세입자 목록(화면 6) 행 탭 또는 수납 탭(화면 7) 세입자 행 탭으로 진입.
+// 이 컴포넌트가 이미 조회해 둔 tenants(계약·회차·알림톡)를 그대로 넘겨 재조회를 피한다(OSoT).
+// 4탭 상태/스크롤을 보존하려고 App 레벨 화면이 아니라 여기서 오버레이로 소유한다.
+const detailTenant = ref(null) // 열린 세입자(상세) | null
+const detailTab = ref('정보') // 진입 시 초기 sub-tab('정보' | '수납')
+
+function openTenantDetail(tenant, tab = '정보') {
+  detailTenant.value = tenant
+  detailTab.value = tab
+}
+function closeTenantDetail() {
+  detailTenant.value = null
+}
+// 삭제 완료 → 상세 닫고 목록 재조회(삭제된 세입자 제거 반영).
+function onTenantDeleted() {
+  detailTenant.value = null
+  loadDetail()
+}
 </script>
 
 <template>
-  <div class="scr">
+  <!-- 세입자 상세(6a/6b/6c) 오버레이: 열려 있으면 4탭 대신 상세를 전체 화면으로 보여준다. -->
+  <TenantDetail
+    v-if="detailTenant"
+    :tenant="detailTenant"
+    :building-name="building.name"
+    :initial-tab="detailTab"
+    @back="closeTenantDetail"
+    @teaser="(label) => emit('teaser', label)"
+    @deleted="onTenantDeleted"
+  />
+
+  <div v-show="!detailTenant" class="scr">
     <div class="tbar">
       <button class="ico back" type="button" aria-label="뒤로" @click="$emit('back')">
         <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M15 18L9 12L15 6" /></svg>
@@ -177,13 +210,14 @@ watch(
           v-else-if="activeTab === 1"
           :tenants="tenants"
           :building-name="building.name"
-          @teaser="(label) => $emit('teaser', label)"
+          @open-tenant="(t) => openTenantDetail(t, '정보')"
+          @teaser="(label) => emit('teaser', label)"
         />
         <PaymentsTab
           v-else-if="activeTab === 2"
           :tenants="tenants"
           :building-name="building.name"
-          @open-tenant="(t) => $emit('open-tenant', t)"
+          @open-tenant="(t) => openTenantDetail(t, '수납')"
           @reload="loadDetail"
         />
         <ExpensesTab

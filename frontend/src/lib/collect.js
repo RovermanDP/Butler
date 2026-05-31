@@ -60,6 +60,32 @@ export function aggregate(reps) {
   return agg
 }
 
+// 단일 세입자 회차 요약 — 세입자 상세 정보 탭(6a) 수납 요약·수납 탭(6c) payhead 공유(OSoT/SRP).
+// 표시 포맷은 컴포넌트가 담당하고, 여기서는 분류·합산만 한다. 화면 7 집계(aggregate)는
+// '세입자 1명=1건' 단위지만, 여기는 '한 세입자의 회차들' 단위라 역할이 다르다.
+// 반환: { paidCount, paidTotal, missCount, missTotal, monthly }
+//   · paid*  : 완납 회차 건수·합계(= '총 입금 금액').
+//   · miss*  : 미납 회차 건수·합계.
+//   · monthly: 매월 납부액 = 대표 회차 금액(미납 > 대기 > 완납 우선, 없으면 첫 회차). 회차 금액은 동일하므로 대표 1건으로 충분.
+export function tenantPaymentSummary(payments) {
+  const ps = payments ?? []
+  const sum = (s) =>
+    ps.filter((p) => p.status === s).reduce((acc, p) => acc + (Number(p.amount) || 0), 0)
+  const count = (s) => ps.filter((p) => p.status === s).length
+  const rep =
+    ps.find((p) => p.status === '미납') ??
+    ps.find((p) => p.status === '대기') ??
+    ps.find((p) => p.status === '완납') ??
+    ps[0]
+  return {
+    paidCount: count('완납'),
+    paidTotal: sum('완납'),
+    missCount: count('미납'),
+    missTotal: sum('미납'),
+    monthly: Number(rep?.amount) || 0,
+  }
+}
+
 // 호실 자연 정렬용 키: "107동 1105호" → 숫자 시퀀스 비교로 101호 < 1105호 < 102호 오류 방지.
 function unitKey(unitNo) {
   return (unitNo ?? '')
