@@ -7,6 +7,7 @@ import BuildingList from './views/BuildingList.vue'
 import BuildingDetail from './views/BuildingDetail.vue'
 import TenantRegister from './views/TenantRegister.vue'
 import RepairAllocation from './views/RepairAllocation.vue'
+import Notifications from './views/Notifications.vue'
 import BuildingManageSheet from './components/BuildingManageSheet.vue'
 import TenantMethodSheet from './components/TenantMethodSheet.vue'
 
@@ -17,7 +18,7 @@ import TenantMethodSheet from './components/TenantMethodSheet.vue'
 //
 // 화면 라우팅: 'loading' → 조회 후 건물 있으면 'list', 없으면 'empty'.
 //   'list' 카드 클릭 → 'detail'(선택 건물 정보 탭). buildings 배열이 목록/가드/카운트 단일 소스.
-const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'detail' | 'register' | 'tenant-register' | 'repair-allocation' | 'error'
+const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'detail' | 'register' | 'tenant-register' | 'repair-allocation' | 'notifications' | 'error'
 const buildings = ref([])
 const stats = ref({}) // building_id → 집계 지표(목록 카드·정보 탭 공용)
 const selectedBuilding = ref(null) // 정보 탭(화면 4) 대상 건물
@@ -162,14 +163,11 @@ function backFromDetail() {
   screen.value = 'list'
 }
 
-// 정보 탭 알림(벨) → Flow D(알림톡 히스토리) 진입점. 라우팅은 App 이 소유한다.
-// Flow D 화면 구현 시 이 핸들러만 화면 전환으로 교체하면 된다(진입점 계약 고정):
-//   selectedBuilding.value = building; screen.value = 'notifications'
-// Flow D 미구현인 현재는 진입점이 살아 있음을 화면 레벨 안내로 알린다(시트 토스트는 시트 전용).
+// 정보 탭 알림(벨) → Flow D(알림톡 히스토리·미리보기, 화면 11·12) 진입. 라우팅은 App 이 소유한다.
+// 뒤로(@back)는 진입 직전 건물 상세(정보 탭)로 복귀한다(selectedBuilding 유지).
 function openNotifications(building) {
-  notice.value = `${building.name} · 알림톡 내역은 다음 단계(Flow D)에서 제공됩니다`
-  clearTimeout(noticeTimer)
-  noticeTimer = setTimeout(() => (notice.value = ''), 2600)
+  selectedBuilding.value = building
+  screen.value = 'notifications'
 }
 
 // 화면 레벨 안내 토스트 공통 헬퍼. 진입점만 살아있는 미구현 플로우(연장/종료·AI 분담)를 안내한다.
@@ -255,6 +253,12 @@ function backToList() {
     <RepairAllocation
       v-else-if="screen === 'repair-allocation' && selectedExpense"
       :expense="selectedExpense"
+      @back="screen = 'detail'"
+    />
+    <!-- 화면 11·12 — Flow D 자동 알림톡(히스토리·미리보기·발송 스케줄). 벨 진입, 뒤로 → 상세. -->
+    <Notifications
+      v-else-if="screen === 'notifications' && selectedBuilding"
+      :building="selectedBuilding"
       @back="screen = 'detail'"
     />
 

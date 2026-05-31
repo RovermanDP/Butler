@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .routers import repair_allocation
+from .routers import notifications, repair_allocation
 
 app = FastAPI(title="Butler API", version="0.1.0")
 
@@ -25,6 +25,8 @@ app.add_middleware(
 
 # Flow C — AI 수선비 분담 (PRD 4.3)
 app.include_router(repair_allocation.router)
+# Flow D — 자동 알림톡 미리보기·발송(mock) (PRD 4.4)
+app.include_router(notifications.router)
 
 
 @app.get("/api/health")
