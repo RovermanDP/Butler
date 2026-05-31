@@ -1,28 +1,37 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { fetchBuildings } from './lib/buildings'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { fetchBuildings, fetchBuildingStats } from './lib/buildings'
 import EmptyState from './views/EmptyState.vue'
 import BuildingRegister from './views/BuildingRegister.vue'
 import BuildingList from './views/BuildingList.vue'
+import BuildingDetail from './views/BuildingDetail.vue'
 import BuildingManageSheet from './components/BuildingManageSheet.vue'
 
-// Flow A — 온보딩·건물 등록 (PRD 4.1).
-// 빈 상태 → 건물 관리 모달 → (세입자 차단 분기) → 건물 등록 → 목록(화면 5) 진입.
-// 가드(세입자 등록 차단)는 별도 API 없이 buildings.length === 0 으로 프론트에서 판단.
+// Flow A — 온보딩·건물 등록 (PRD 4.1) + Flow B-1·B-2 — 목록·정보 탭 (PRD 4.2).
+// 빈 상태 → 건물 관리 모달 → (세입자 차단 분기) → 건물 등록 → 목록(화면 5).
+//   목록 카드 탭 → 단일 건물 정보 탭(화면 4). 정보 탭 FAB(+) → '건물 관리'(세입자 등록 활성, 화면 9).
+// 가드(세입자 등록 활성/차단)는 별도 API 없이 buildings.length 으로 프론트에서 판단.
 //
-// 화면 라우팅 계약(Flow B 가 이어붙일 지점):
-//   'loading' 시작 → 조회 후 건물 있으면 'list', 없으면 'empty'.
-//   'list' 의 건물 카드 클릭 → (Flow B) 'detail' 상태로 단일 건물 4탭 진입 예정.
-//   buildings 배열이 목록/가드/카운트의 단일 소스.
-const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'register' | 'error'
+// 화면 라우팅: 'loading' → 조회 후 건물 있으면 'list', 없으면 'empty'.
+//   'list' 카드 클릭 → 'detail'(선택 건물 정보 탭). buildings 배열이 목록/가드/카운트 단일 소스.
+const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'detail' | 'register' | 'error'
 const buildings = ref([])
+const stats = ref({}) // building_id → 집계 지표(목록 카드·정보 탭 공용)
+const selectedBuilding = ref(null) // 정보 탭(화면 4) 대상 건물
 const loadError = ref('')
+
+// 세입자 등록 활성 여부(화면 2 vs 화면 9 분기). 건물이 1개 이상이면 활성.
+const tenantEnabled = computed(() => buildings.value.length > 0)
 
 const sheetOpen = ref(false)
 
 // 등록 직후 목록 상단 성공 배너
 const flash = ref('')
 let flashTimer = null
+
+// 정보 탭 알림(벨) 진입점 안내 — 화면 레벨 토스트(시트 토스트와 별개)
+const notice = ref('')
+let noticeTimer = null
 
 // 모달 토스트/강조 상태 (화면 2a)
 const tenantTapped = ref(false)
@@ -45,7 +54,10 @@ async function loadBuildings() {
   screen.value = 'loading'
   loadError.value = ''
   try {
-    buildings.value = await fetchBuildings()
+    // 건물 목록과 집계 지표를 병렬 조회(둘 다 Supabase 직결).
+    const [list, statMap] = await Promise.all([fetchBuildings(), fetchBuildingStats()])
+    buildings.value = list
+    stats.value = statMap
     screen.value = buildings.value.length ? 'list' : 'empty'
   } catch (e) {
     loadError.value = e.message
@@ -57,6 +69,7 @@ onMounted(loadBuildings)
 onUnmounted(() => {
   clearTimeout(toastTimer)
   clearTimeout(flashTimer)
+  clearTimeout(noticeTimer)
 })
 
 function openSheet() {
@@ -78,14 +91,36 @@ function onSelectBuilding() {
 }
 
 function onSelectTenant() {
-  if (buildings.value.length === 0) {
+  if (!tenantEnabled.value) {
     // 화면 2a — 건물 없이 세입자 등록 차단
     tenantTapped.value = true
     showToast('❗ 등록된 건물이 없습니다. 건물을 등록해주세요', 'error')
     return
   }
-  // 건물이 있는 경우: 세입자 등록은 Flow A 범위 밖 → 안내만 한다.
+  // 화면 9 — 세입자 등록 활성(Flow E 진입점). Flow E 미구현이라 여기선 안내만 한다.
   showToast('세입자 등록은 다음 단계에서 제공됩니다', 'info')
+}
+
+// 목록 카드 탭 → 단일 건물 정보 탭(화면 4) 진입.
+function openDetail(building) {
+  selectedBuilding.value = building
+  screen.value = 'detail'
+}
+
+// 정보 탭에서 ‹ 뒤로 → 목록 복귀.
+function backFromDetail() {
+  selectedBuilding.value = null
+  screen.value = 'list'
+}
+
+// 정보 탭 알림(벨) → Flow D(알림톡 히스토리) 진입점. 라우팅은 App 이 소유한다.
+// Flow D 화면 구현 시 이 핸들러만 화면 전환으로 교체하면 된다(진입점 계약 고정):
+//   selectedBuilding.value = building; screen.value = 'notifications'
+// Flow D 미구현인 현재는 진입점이 살아 있음을 화면 레벨 안내로 알린다(시트 토스트는 시트 전용).
+function openNotifications(building) {
+  notice.value = `${building.name} · 알림톡 내역은 다음 단계(Flow D)에서 제공됩니다`
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => (notice.value = ''), 2600)
 }
 
 function onRegistered(building) {
@@ -125,10 +160,25 @@ function backToList() {
       @back="backToList"
       @submitted="onRegistered"
     />
-    <BuildingList v-else-if="screen === 'list'" :buildings="buildings" :flash="flash" />
+    <BuildingList
+      v-else-if="screen === 'list'"
+      :buildings="buildings"
+      :stats="stats"
+      :flash="flash"
+      @select="openDetail"
+    />
+    <BuildingDetail
+      v-else-if="screen === 'detail' && selectedBuilding"
+      :building="selectedBuilding"
+      :stat="stats[selectedBuilding.id] ?? null"
+      @back="backFromDetail"
+      @open-sheet="openSheet"
+      @open-notifications="openNotifications"
+    />
 
     <BuildingManageSheet
       :open="sheetOpen"
+      :tenant-enabled="tenantEnabled"
       :tenant-tapped="tenantTapped"
       :toast="toast"
       :toast-kind="toastKind"
@@ -147,6 +197,11 @@ function backToList() {
     >
       +
     </button>
+
+    <!-- 화면 레벨 안내 토스트(예: 정보 탭 알림 진입점). 시트 토스트와 독립. -->
+    <Transition name="notice">
+      <div v-if="notice" class="app-notice">{{ notice }}</div>
+    </Transition>
   </div>
 </template>
 
@@ -232,5 +287,30 @@ function backToList() {
   cursor: pointer;
   box-shadow: 0 10px 22px -8px rgba(58, 110, 165, 0.8);
   z-index: 6;
+}
+
+/* 화면 레벨 안내 토스트 — 하단 네비 위에 띄운다. */
+.app-notice {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 64px;
+  z-index: 9;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+  text-align: center;
+}
+.notice-enter-active,
+.notice-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.notice-enter-from,
+.notice-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 </style>

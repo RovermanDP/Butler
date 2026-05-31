@@ -29,6 +29,8 @@ AI 수선비 분담과 자동 알림톡으로 반복 업무·분쟁을 줄인다
 `expenses`(is_repair=true면 AI분담) / `repair_allocations` / `notifications`(발송 mock).
 - **세입자 등록 신규 필드(상세는 PRD 3장):** `tenants.tenant_type`('개인'|'사업자')·사업자명/담당자명, `contracts`에 계약형태(월세/전세)·보증금(전세 필수)·관리비·기타비용1/2 + 항목별 부가세 플래그·납부일·선불/후불·첫 납부일·입금자명·**증빙 설정 5종**(+조건부 필드)·계약서/사업자등록증 URL(Storage).
 - **증빙(proof) 두 종류 혼동 금지:** ① `expenses.proof_type`(지출 증빙: 세금계산서/현금영수증(개인)/간이영수증) ② 세입자 등록 시 **임대료 증빙 발급 설정**(`contracts.proof_kind`: 해당없음/현금영수증(개인소득공제용)/현금영수증(사업자증빙용)/세금계산서/계산서). 서로 다른 개념.
+- **DB 제약:** Supabase 직결 CRUD라 enum·조건부 필수값은 CHECK로 방어한다(월세=월세 필수, 전세=보증금 필수·월세 null, 납부정보 필수, 증빙 종류별 하위 필드 필수).
+- **SQL 실행 경로:** 새 DB는 `schema.sql` → `seed.sql`; 기존 Flow A/buildings 보존 DB는 `migrate_tenant_fields.sql`만 실행하고, 데모 데이터가 필요할 때만 비파괴 `seed.sql`을 추가 실행한다.
 - 집계(입주율·미납·임대수익·매월 입금 예정 총액 등)는 컬럼이 아니라 **View/RPC로 계산**한다.
 - 모든 화면 수치는 와이어프레임 기준 **시드 데이터**를 쓴다.
 

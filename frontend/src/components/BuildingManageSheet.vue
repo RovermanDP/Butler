@@ -1,12 +1,16 @@
 <script setup>
 // 화면 2 — 건물 관리 모달(바텀시트). FAB(+) 탭 시 등장.
 // 화면 2a — 세입자 등록을 건물 미등록 상태에서 누르면 빨간 토스트로 차단.
+// 화면 9 — 건물 등록 완료 후엔 세입자 등록이 활성('✓ 지금 등록 가능' 뱃지) → Flow E 진입점.
 //
-// 분기 로직(차단 여부 판단)은 상위(App)가 건물 수로 결정하고,
-// 이 컴포넌트는 표시(tapped 강조 + 토스트)와 사용자 입력 전달만 담당(SRP).
+// ⚠ CLAUDE.md: 화면 2(빈 상태)·화면 9(등록 완료)는 동일 컴포넌트를 재사용(복제 금지)하고,
+//    세입자 등록 활성 여부만 tenantEnabled prop 으로 분기한다.
+// 분기 판단(건물 수)은 상위(App)가 하고, 이 컴포넌트는 표시 + 사용자 입력 전달만 담당(SRP).
 defineProps({
   open: { type: Boolean, default: false },
-  // 세입자 등록이 차단되어 빨간 강조(outline)를 줄지 여부
+  // 세입자 등록 활성 여부. true = 화면 9(활성·뱃지) / false = 화면 2(비활성·회색).
+  tenantEnabled: { type: Boolean, default: false },
+  // (비활성 상태에서) 세입자 등록을 눌러 빨간 강조(outline)를 줄지 여부 — 화면 2a
   tenantTapped: { type: Boolean, default: false },
   toast: { type: String, default: '' },
   toastKind: { type: String, default: 'error' }, // 'error' | 'info'
@@ -29,7 +33,12 @@ defineEmits(['close', 'select-building', 'select-tenant'])
             </svg>
           </button>
         </div>
-        <div class="sh-desc">편리하고 효율적인 건물 관리를 위해<br />건물과 세입자 정보를 등록해주세요.</div>
+        <div v-if="tenantEnabled" class="sh-desc">
+          건물이 이미 등록되어 있어요.<br />이제 <b>세입자 등록</b>까지 바로 진행할 수 있습니다.
+        </div>
+        <div v-else class="sh-desc">
+          편리하고 효율적인 건물 관리를 위해<br />건물과 세입자 정보를 등록해주세요.
+        </div>
 
         <div class="opts">
           <button class="opt active" type="button" @click="$emit('select-building')">
@@ -37,12 +46,13 @@ defineEmits(['close', 'select-building', 'select-tenant'])
             <div class="ol">건물등록</div>
           </button>
           <button
-            class="opt dis"
-            :class="{ tapped: tenantTapped }"
+            class="opt"
+            :class="[tenantEnabled ? 'active enabled-new' : 'dis', { tapped: !tenantEnabled && tenantTapped }]"
             type="button"
             @click="$emit('select-tenant')"
           >
-            <span v-if="tenantTapped" class="taptag">탭함</span>
+            <span v-if="tenantEnabled" class="okmark">✓ 지금 등록 가능</span>
+            <span v-else-if="tenantTapped" class="taptag">탭함</span>
             <div class="oic">👥<span class="pl">+</span></div>
             <div class="ol">세입자 등록</div>
           </button>
@@ -176,6 +186,24 @@ defineEmits(['close', 'select-building', 'select-tenant'])
 .opt.tapped {
   outline: 2px solid var(--danger);
   outline-offset: 1px;
+}
+/* 화면 9 — 세입자 등록 활성. 건물등록과 동일한 active 톤 + '지금 등록 가능' 초록 뱃지. */
+.opt.enabled-new {
+  outline: 1.5px solid var(--ok);
+  outline-offset: 1px;
+}
+.opt .okmark {
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 800;
+  color: #fff;
+  background: var(--ok);
+  padding: 2px 8px;
+  border-radius: 7px;
+  white-space: nowrap;
 }
 .opt .taptag {
   position: absolute;

@@ -1,14 +1,40 @@
 <script setup>
 // 화면 5 — 건물 목록(건물별). 등록 완료 후 첫 진입 화면이자 앱 시작 시 기본 홈.
-// ⚠ Flow A 범위에서는 "라이트" 버전: 등록 데이터(이름·주소·유형·세대·계좌)만 카드로 보여준다.
-//    아래 두 가지는 Flow B(PRD 4.2) 확장점이라 여기서 구현하지 않는다.
-//      ① 카드 클릭 → 화면 4(단일 건물 상세 4탭) 네비게이션
-//      ② building_stats View 연동(입주율 ring·임대수익·신규/만료 뱃지)
-//    전체/건물별 토글·검색·즐겨찾기 토글도 Flow B에서 기능을 붙인다(지금은 시각만).
-defineProps({
+// 카드 = buildings(등록 데이터) + stats(building_stats/unpaid_stats View) 합류.
+//   · 입주율 ring·임대현황(n/n)·임대수익·신규/만료/미납 뱃지는 모두 집계 View 산출값.
+//   · 카드 탭 → 단일 건물 상세(정보 탭, 화면 4) — select 이벤트로 상위(App)에 위임.
+// 전체/건물별 토글·검색·즐겨찾기는 PRD상 B 범위지만 완료 기준 밖이라 시각만 유지(과도구현 지양).
+import { formatWon } from '../lib/format'
+
+const props = defineProps({
   buildings: { type: Array, required: true },
+  // building_id → 집계 지표 맵. 등록 직후(미반영) 건물은 키가 없을 수 있어 statOf 로 방어한다.
+  stats: { type: Object, default: () => ({}) },
   flash: { type: String, default: '' }, // 등록 직후 성공 배너(선택)
 })
+
+defineEmits(['select'])
+
+// 집계 미반영(예: 방금 등록한 건물) 시에도 카드가 깨지지 않도록 기본값을 채운다.
+function statOf(b) {
+  return (
+    props.stats[b.id] ?? {
+      occupancy_rate: 0,
+      occupied_units: 0,
+      unit_count: b.unit_count,
+      rental_income: 0,
+      new_this_month: 0,
+      expiring_this_month: 0,
+      unpaid_count: 0,
+    }
+  )
+}
+
+// 입주율 ring(conic-gradient). 와이어프레임의 .r100/.r85/.r93 하드코딩을 비율로 동적화.
+function ringStyle(rate) {
+  const pct = Number(rate) || 0
+  return { background: `conic-gradient(var(--accent) 0 ${pct}%, var(--gray-2) 0)` }
+}
 </script>
 
 <template>
@@ -30,7 +56,7 @@ defineProps({
         <div v-if="flash" class="flash">✓ {{ flash }}</div>
       </Transition>
 
-      <!-- 검색: Flow B에서 필터 기능 연결, 지금은 시각만 -->
+      <!-- 검색: Flow B+ 에서 필터 기능 연결, 지금은 시각만 -->
       <div class="search">
         <span>건물 검색</span>
         <span class="search-ic" aria-hidden="true">
@@ -40,17 +66,34 @@ defineProps({
         </span>
       </div>
 
-      <!-- 라이트 카드. Flow B에서 클릭→상세, 입주율 ring·임대수익 추가 -->
-      <div v-for="b in buildings" :key="b.id" class="bcard">
+      <!-- 건물 카드. 탭 → 정보 탭(화면 4) 진입 -->
+      <button
+        v-for="b in buildings"
+        :key="b.id"
+        class="bcard"
+        type="button"
+        @click="$emit('select', b)"
+      >
         <span class="star" :class="{ on: b.is_favorite }">{{ b.is_favorite ? '★' : '☆' }}</span>
         <div class="bn">{{ b.name }} ›</div>
-        <div class="addr">{{ b.address }}</div>
-        <div class="chips">
-          <span class="chip">{{ b.building_type }}</span>
-          <span class="chip">{{ b.unit_count }}세대</span>
+
+        <div class="badges">
+          <span v-if="statOf(b).new_this_month" class="tag new">신규 {{ statOf(b).new_this_month }}</span>
+          <span v-if="statOf(b).expiring_this_month" class="tag end">만료 {{ statOf(b).expiring_this_month }}</span>
+          <span v-if="statOf(b).unpaid_count" class="tag due">미납 {{ statOf(b).unpaid_count }}</span>
         </div>
-        <div class="acct">입금계좌 · {{ b.account_info }}</div>
-      </div>
+
+        <div class="stat">
+          <div class="ring" :style="ringStyle(statOf(b).occupancy_rate)">
+            <b>{{ statOf(b).occupancy_rate }}%</b>
+          </div>
+          <div class="info">
+            <div class="occ">임대현황 ({{ statOf(b).occupied_units }}/{{ statOf(b).unit_count }})</div>
+            <div class="inc">{{ formatWon(statOf(b).rental_income) }}</div>
+            <div class="bar"><i :style="{ width: (Number(statOf(b).occupancy_rate) || 0) + '%' }"></i></div>
+          </div>
+        </div>
+      </button>
     </div>
 
     <nav class="bnav">
@@ -174,12 +217,23 @@ defineProps({
   stroke-width: 1.8;
   stroke-linecap: round;
 }
+/* 카드 = 클릭 가능한 button. 기본 버튼 스타일 리셋 후 카드 레이아웃 적용. */
 .bcard {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
   position: relative;
   margin-top: 12px;
   border: 1px solid var(--gray-2);
   border-radius: var(--r-card);
+  background: #fff;
   padding: 16px 14px;
+}
+.bcard:active {
+  background: var(--gray-1);
 }
 .bcard .star {
   position: absolute;
@@ -196,28 +250,85 @@ defineProps({
   font-weight: 800;
   padding-right: 24px;
 }
-.bcard .addr {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--gray-5);
-}
-.bcard .chips {
+.bcard .badges {
   display: flex;
   gap: 6px;
-  margin-top: 10px;
+  margin: 8px 0 11px;
+  flex-wrap: wrap;
+  min-height: 0;
 }
-.bcard .chip {
-  font-size: 11px;
+.bcard .badges:empty {
+  margin: 6px 0 0;
+}
+.tag {
+  font-size: 10px;
   font-weight: 700;
-  color: var(--gray-6);
-  background: var(--gray-1);
+  padding: 3px 8px;
   border-radius: var(--r-tag);
-  padding: 4px 9px;
 }
-.bcard .acct {
-  margin-top: 10px;
-  font-size: 12px;
+.tag.new {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+.tag.end {
+  background: var(--gray-1);
   color: var(--gray-5);
+}
+.tag.due {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.bcard .stat {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.ring {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+.ring::after {
+  content: '';
+  position: absolute;
+  inset: 7px;
+  background: #fff;
+  border-radius: 50%;
+}
+.ring b {
+  position: relative;
+  z-index: 2;
+  font-size: 12px;
+  font-weight: 800;
+}
+.stat .info {
+  flex: 1;
+}
+.stat .info .occ {
+  font-size: 10.5px;
+  color: var(--gray-4);
+  font-weight: 600;
+}
+.stat .info .inc {
+  font-size: 14px;
+  font-weight: 800;
+  margin-top: 1px;
+}
+.bar {
+  height: 5px;
+  border-radius: 4px;
+  background: var(--gray-2);
+  margin-top: 6px;
+  overflow: hidden;
+}
+.bar i {
+  height: 100%;
+  background: var(--accent);
+  display: block;
 }
 .bnav {
   height: 52px;

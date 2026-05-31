@@ -26,6 +26,34 @@ export async function fetchBuildings() {
   return data ?? []
 }
 
+// 건물별 집계 지표 (입주율·세대구성·보증금·임대수익·이달 신규/만료 + 미납).
+// PRD 3장: 집계는 컬럼이 아니라 View 로 계산 → building_stats + unpaid_stats 를 합쳐
+// building_id 로 키잉한 맵으로 반환한다(목록 카드·정보 탭 공용 소스).
+// buildings 와 별도 소스라 화면(목록/정보 탭)에서 building_id 로 합류시킨다(SRP).
+export async function fetchBuildingStats() {
+  if (!supabase) throw new Error(supabaseConfigError)
+  const [statsRes, unpaidRes] = await Promise.all([
+    supabase.from('building_stats').select('*'),
+    supabase.from('unpaid_stats').select('*'),
+  ])
+  if (statsRes.error) throw new Error(statsRes.error.message)
+  if (unpaidRes.error) throw new Error(unpaidRes.error.message)
+
+  // 미납은 미납이 있는 건물만 행이 생기므로(LEFT 아님) 맵으로 먼저 모은다.
+  const unpaid = {}
+  for (const u of unpaidRes.data ?? []) unpaid[u.building_id] = u
+
+  const map = {}
+  for (const s of statsRes.data ?? []) {
+    map[s.building_id] = {
+      ...s,
+      unpaid_count: unpaid[s.building_id]?.unpaid_count ?? 0,
+      unpaid_amount: unpaid[s.building_id]?.unpaid_amount ?? 0,
+    }
+  }
+  return map
+}
+
 // 건물 등록. payload 는 buildings 컬럼(snake_case) 그대로.
 // 등록 직후 목록/완료 화면에서 쓸 최소 필드만 반환한다.
 export async function insertBuilding(payload) {
