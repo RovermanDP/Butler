@@ -4,9 +4,10 @@
 --    → 데모를 언제 돌려도 미납 D+n·"이번 달 지출"이 현실적으로 표시된다(과거 2022 고정일 폐기).
 --    금액·세대수(입주율·임대수익·보증금)는 날짜 무관이라 와이어프레임 수치 그대로 유지.
 --    김동락 계약 시작/종료 월은 '이번 달'과 겹치지 않게 둬 03호점 '이달 신규 1/만료 0'(filler 산출)을 보존.
--- ⚠ 비파괴 · idempotent: truncate/delete 없음. 고정 UUID + on conflict do nothing +
---    채움 루프 존재가드로, 기존 데이터(예: Flow A로 등록한 건물)를 지우지 않고
---    데모 데이터만 덧입힌다. 여러 번 실행해도 중복 INSERT 되지 않는다.
+-- ⚠ 비파괴 · idempotent: 고정 UUID + on conflict + 채움 루프 존재가드로, 기존 데이터(예: Flow A로
+--    등록한 건물)를 지우지 않고 데모 데이터만 덧입힌다. 여러 번 실행해도 중복 INSERT 되지 않는다.
+--    예외: 김동락 계약(0001)의 회차·알림톡은 데모 날짜 재생성을 위해 '그 계약의 행만' delete 후 재삽입한다
+--    (이 파일이 소유한 데모 행만 — 사용자 데이터는 건드리지 않음). 계약기간은 on conflict do update 로 갱신.
 --    → 완전 초기화가 필요하면 schema.sql(전체 drop)을 먼저 실행한 뒤 이 파일을 실행한다.
 --
 -- 데모 핵심 건물 = Butler 03호점(건대). 모든 상세 탭이 이 건물을 사용.
@@ -41,10 +42,13 @@ on conflict (id) do nothing;
 
 -- 김동락 계약 2건 ("다른 계약서 총 2건"): 현재 계약중 101호 + 과거 종료 계약
 -- 0001: 현재 계약중 (세입자 등록 위저드 결과 — 납부·증빙 신규 필드 포함).
+--       계약기간 = 데모 기준 2024-07-12 ~ 2026-07-12(약 2년). current_date(데모=2026-05-31) 상대값으로 표현 →
+--         시작 = 이번달(-22개월)+11일, 종료 = 이번달(+2개월)+11일. 시작/종료월(7월)≠이번달(5월) → 이달 신규/만료 0 유지.
 --       월세 550,000·관리비 94,500은 '부가세 포함(최종 청구)' 금액이므로 VAT 플래그는 false.
 --       (PRD 3장: 플래그 true면 ×1.1 가산 → 이미 포함값에 켜면 이중가산되어 회차 금액과 불일치)
---       12일 후불, 첫 납부=시작 +1개월(현재 기준 상대), 증빙=현금영수증(개인소득공제용).
---       0002: 과거 종료 계약 — 신규 필드 null.
+--       12일 후불, 첫 납부=시작 +1개월(2024-08-12), 증빙=현금영수증(개인소득공제용).
+--       0002: 과거 종료 계약(현재 계약 직전 2년: 2022-07-12 ~ 2024-07-11) — 신규 필드 null.
+-- ⚠ 데모 날짜 재생성: on conflict 시 계약기간/첫 납부일을 갱신한다(아래 회차·알림톡 재생성과 짝).
 insert into contracts (id, tenant_id, building_id, unit_no, contract_start, contract_end,
                        deposit, monthly_rent, maintenance_fee, lease_type,
                        rent_vat, maintenance_vat,
@@ -54,44 +58,56 @@ insert into contracts (id, tenant_id, building_id, unit_no, contract_start, cont
   ('cccccccc-cccc-cccc-cccc-cccccccc0001',
    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '33333333-3333-3333-3333-333333333333',
    '101호',
-   (date_trunc('month', current_date) - interval '16 months' + interval '11 days')::date,  -- 현재 기준 ~16개월 전 시작(시작월≠이번달 → 이달 신규 0 유지)
-   (date_trunc('month', current_date) + interval '7 months'  + interval '10 days')::date,   -- 약 2년 계약, 종료월≠이번달 → 이달 만료 0 유지
+   (date_trunc('month', current_date) - interval '22 months' + interval '11 days')::date,  -- 시작 2024-07-12
+   (date_trunc('month', current_date) + interval '2 months'  + interval '11 days')::date,   -- 종료 2026-07-12
    10000000, 550000, 94500, '월세',
    false, false,
    12, '후불',
-   (date_trunc('month', current_date) - interval '15 months' + interval '11 days')::date, '김동락',  -- 첫 납부(후불 → 시작 +1개월)
+   (date_trunc('month', current_date) - interval '21 months' + interval '11 days')::date, '김동락',  -- 첫 납부 2024-08-12(후불 → 시작 +1개월)
    '현금영수증(개인소득공제용)', '010-1234-5678',
    '계약중', true),
   ('cccccccc-cccc-cccc-cccc-cccccccc0002',
    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '33333333-3333-3333-3333-333333333333',
    '101호',
-   (date_trunc('month', current_date) - interval '40 months' + interval '11 days')::date,  -- 직전 종료 계약(현재 계약 직전 2년)
-   (date_trunc('month', current_date) - interval '16 months' + interval '10 days')::date,
+   (date_trunc('month', current_date) - interval '46 months' + interval '11 days')::date,  -- 직전 종료 계약 2022-07-12
+   (date_trunc('month', current_date) - interval '22 months' + interval '10 days')::date,   -- 종료 2024-07-11(현재 계약 시작 직전)
    8000000, 500000, 80000, '월세',
    false, false,
    12, '후불',
-   (date_trunc('month', current_date) - interval '39 months' + interval '11 days')::date, '김동락',
+   (date_trunc('month', current_date) - interval '45 months' + interval '11 days')::date, '김동락',
    '해당없음', null,
    '종료', false)
-on conflict (id) do nothing;
+on conflict (id) do update set
+  contract_start     = excluded.contract_start,
+  contract_end       = excluded.contract_end,
+  first_payment_date = excluded.first_payment_date;
 
 -- 김동락 수납 회차 (101호, 회차 청구 650,000, 입금 예정일 12일, 월세 후불)
--- ⚠ 이 4건은 '수납 탭 와이어프레임'에 맞춘 데모 큐레이션(최근 회차 9 대기/8 미납/7·6 완납)이다.
---    PRD 3장 §"payments 회차 자동 생성"(첫 납부일~종료일 매월 일괄 insert)은
---    Flow E '등록 시점'의 결정적 계산(composable/RPC) 책임이며, 이 데모 계약은 그 산출물이 아니다.
---    회차 청구액 650,000은 와이어프레임 표기값(월세 550,000+관리비 94,500=644,500의 데모 반올림).
--- due_date 는 입금예정일(매월 12일)을 현재 기준 상대월로 둔다 → 미납 D+n 이 데모 시점에서도 현실적(과거 고정일 X).
-insert into payments (contract_id, round_no, amount, due_date, status, paid_date, is_postpaid) values
-  ('cccccccc-cccc-cccc-cccc-cccccccc0001', 9, 650000,
-   (date_trunc('month', current_date) + interval '1 month' + interval '11 days')::date, '대기', null, true),  -- 다음달 12일(예정)
-  ('cccccccc-cccc-cccc-cccc-cccccccc0001', 8, 650000,
-   (date_trunc('month', current_date) + interval '11 days')::date, '미납', null, true),                       -- 이번달 12일(미납 → 오늘 기준 D+n)
-  ('cccccccc-cccc-cccc-cccc-cccccccc0001', 7, 650000,
-   (date_trunc('month', current_date) - interval '1 month' + interval '11 days')::date, '완납',
-   (date_trunc('month', current_date) - interval '1 month' + interval '11 days')::date, true),                -- 지난달 완납
-  ('cccccccc-cccc-cccc-cccc-cccccccc0001', 6, 650000,
-   (date_trunc('month', current_date) - interval '2 months' + interval '11 days')::date, '완납',
-   (date_trunc('month', current_date) - interval '2 months' + interval '10 days')::date, true)                -- 2개월 전 완납
+-- ⚠ 데모 큐레이션: 계약 전기간(첫 납부 2024-08-12 ~ 종료 2026-07-12) 매월 12일 = 24회차를 시리즈로 생성한다.
+--    · 회차 청구액 650,000은 와이어프레임 표기값(월세 550,000+관리비 94,500=644,500의 데모 반올림).
+--    · 상태: due_date > 오늘 → '대기'(미래 회차), 미납 큐레이션(이번달 회차) → '미납', 그 외 경과분 → '완납'.
+--    · 미납 1건 = 이번달(2026-05, off_mo 0, due 2026-05-12) → 알림톡 '미납 3·7일차'와 짝. 오늘(05-31) 기준 D+19.
+--      총 입금 = 완납 21회차 × 650,000 = 13,650,000 / 미납 1건 = 650,000(현재 날짜 2026-05-31 기준).
+--    PRD 3장 §"payments 회차 자동 생성"은 Flow E '등록 시점'의 결정적 계산 책임이며, 이 데모 계약은 그 산출물이 아니다.
+-- 데모 날짜 재생성을 위해 이 계약(0001)의 기존 회차를 비우고 다시 채운다(이 파일이 소유한 데모 행만 삭제).
+delete from payments where contract_id = 'cccccccc-cccc-cccc-cccc-cccccccc0001';
+insert into payments (contract_id, round_no, amount, due_date, status, paid_date, is_postpaid)
+select
+  'cccccccc-cccc-cccc-cccc-cccccccc0001',
+  p.n,
+  650000,
+  p.due,
+  case when p.due > current_date then '대기'
+       when p.off_mo = 0 then '미납'
+       else '완납' end,
+  case when p.due > current_date or p.off_mo = 0 then null else p.due end,
+  true
+from (
+  select gs.n,
+         (21 - (gs.n - 1)) as off_mo,  -- round1 = -21개월(2024-08) … round22 = 0(2026-05) … round24 = +2(2026-07)
+         (date_trunc('month', current_date) - ((21 - (gs.n - 1)) || ' months')::interval + interval '11 days')::date as due
+  from generate_series(1, 24) as gs(n)
+) p
 on conflict (contract_id, round_no) do nothing;
 
 -- 03호점 지출 (이번 달 합계 1,221,000 / 4건). 냉장고 수리비만 is_repair=true → AI 분담 진입.
@@ -103,17 +119,36 @@ insert into expenses (id, building_id, expense_date, title, amount, proof_type, 
   ('e0000000-0000-0000-0000-000000000004', '33333333-3333-3333-3333-333333333333', (date_trunc('month', current_date) + interval '24 days')::date, '도어록 교환',           77000, '간이영수증',       false)
 on conflict (id) do nothing;
 
--- 김동락 알림톡 히스토리 (모두 mock_sent — 종류별 태그/타임라인)
--- sent_at 도 현재 기준 최근 몇 개월로 둔다(mock 히스토리 — 납부/미납/연장/종료 색 태그 데모용).
-insert into notifications (id, contract_id, type, title, sent_at, status) values
-  ('d0000000-0000-0000-0000-000000000001', 'cccccccc-cccc-cccc-cccc-cccccccc0001', '납부', '납부 1일전 알림톡 발송', date_trunc('month', current_date) + interval '10 days 18 hours', 'mock_sent'),  -- 이번달 11일 납부안내
-  ('d0000000-0000-0000-0000-000000000002', 'cccccccc-cccc-cccc-cccc-cccccccc0001', '미납', '미납 7일차 알림톡 발송', date_trunc('month', current_date) + interval '18 days 13 hours', 'mock_sent'),  -- 이번달 19일 미납안내
-  ('d0000000-0000-0000-0000-000000000003', 'cccccccc-cccc-cccc-cccc-cccccccc0001', '납부', '납부 1일전 알림톡 발송', date_trunc('month', current_date) - interval '1 month' + interval '10 days 18 hours', 'mock_sent'),
-  ('d0000000-0000-0000-0000-000000000004', 'cccccccc-cccc-cccc-cccc-cccccccc0001', '미납', '미납 2일차 알림톡 발송', date_trunc('month', current_date) - interval '1 month' + interval '13 days 13 hours', 'mock_sent'),
-  ('d0000000-0000-0000-0000-000000000005', 'cccccccc-cccc-cccc-cccc-cccccccc0001', '납부', '납부 1일전 알림톡 발송', date_trunc('month', current_date) - interval '2 months' + interval '10 days 18 hours', 'mock_sent'),
-  ('d0000000-0000-0000-0000-000000000006', 'cccccccc-cccc-cccc-cccc-cccccccc0001', '연장', '연장 여부 알림톡 발송',   date_trunc('month', current_date) - interval '2 months' + interval '10 hours', 'mock_sent'),
-  ('d0000000-0000-0000-0000-000000000007', 'cccccccc-cccc-cccc-cccc-cccccccc0001', '종료', '계약종료 알림톡 발송',   date_trunc('month', current_date) - interval '16 months' + interval '10 days 10 hours', 'mock_sent')  -- 직전 계약(종료) 시점
-on conflict (id) do nothing;
+-- 김동락 알림톡 히스토리 (모두 mock_sent — 종류별 태그/타임라인). 회차 타임라인과 짝을 이뤄 재생성한다.
+--   · 납부 1일전(매월 11일 18:00): 첫 납부월(2024-08)부터 이번달(2026-05)까지 22건. PRD 발송 스케줄 D-1.
+--   · 미납 n일차(13:00, n∈{3,7} POC 고정, 날짜=11+n일): 이번달(2026-05) 미납 회차에 대해 3일차·7일차 = 2건.
+--   · 연장 여부(매월 15일 10:00): 종료(2026-07)월 기준 -6 ~ -2개월 = 2026-01 ~ 2026-05 → 5건.
+-- 데모 날짜 재생성을 위해 이 계약(0001)의 기존 알림톡을 비우고 다시 채운다(이 파일이 소유한 데모 행만 삭제).
+delete from notifications where contract_id = 'cccccccc-cccc-cccc-cccc-cccccccc0001';
+-- 납부 1일전 22건 (이번달 기준 -0 ~ -21개월, 매월 11일 18:00)
+insert into notifications (id, contract_id, type, title, sent_at, status)
+select
+  ('d1000000-0000-0000-0000-' || lpad(gs.m::text, 12, '0'))::uuid,
+  'cccccccc-cccc-cccc-cccc-cccccccc0001', '납부', '납부 1일전 알림톡 발송',
+  date_trunc('month', current_date) - (gs.m || ' months')::interval + interval '10 days 18 hours',
+  'mock_sent'
+from generate_series(0, 21) as gs(m);
+-- 미납 n일차 2건 (이번달 2026-05 미납 회차 대상, 날짜=11+n일 13:00 → 05-14·05-18)
+insert into notifications (id, contract_id, type, title, sent_at, status)
+select
+  ('d2000000-0000-0000-0000-' || lpad(v.n::text, 12, '0'))::uuid,
+  'cccccccc-cccc-cccc-cccc-cccccccc0001', '미납', '미납 ' || v.n || '일차 알림톡 발송',
+  date_trunc('month', current_date) + ((10 + v.n) || ' days')::interval + interval '13 hours',
+  'mock_sent'
+from (values (3), (7)) as v(n);
+-- 연장 여부 5건 (이번달 기준 -0 ~ -4개월 = 2026-05 ~ 2026-01, 매월 15일 10:00)
+insert into notifications (id, contract_id, type, title, sent_at, status)
+select
+  ('d3000000-0000-0000-0000-' || lpad(gs.m::text, 12, '0'))::uuid,
+  'cccccccc-cccc-cccc-cccc-cccccccc0001', '연장', '연장 여부 알림톡 발송',
+  date_trunc('month', current_date) - (gs.m || ' months')::interval + interval '14 days 10 hours',
+  'mock_sent'
+from generate_series(0, 4) as gs(m);
 
 -- ============================================================
 -- 집계 수치를 와이어프레임과 맞추기 위한 채움(filler) 계약
