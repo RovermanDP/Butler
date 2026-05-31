@@ -51,6 +51,22 @@ export function formatKoDate(iso) {
   return `${m}월 ${d}일 (${wd})`
 }
 
+// 'YYYY-MM-DD' → 'Y년 M월 D일' (Step3 첫 납부일 표기). 형식 아니면 빈 문자열.
+export function formatKoYmd(iso) {
+  const parsed = parseIsoDate(iso)
+  if (!parsed) return ''
+  const { y, m, d } = parsed
+  return `${y}년 ${m}월 ${d}일`
+}
+
+// 'YYYY-MM-DD' → 'YY.MM.DD' (회차표·납부 행의 보조 날짜 표기). 형식 아니면 빈 문자열.
+export function formatShortDate(iso) {
+  const parsed = parseIsoDate(iso)
+  if (!parsed) return ''
+  const { y, m, d } = parsed
+  return `${String(y).slice(2)}.${pad2(m)}.${pad2(d)}`
+}
+
 // 월 그리드(6주 X 7일). 앞쪽 빈칸은 null, 날짜 칸은 'YYYY-MM-DD'.
 // 캘린더 모달이 요일 정렬된 셀을 그리는 데 쓴다.
 export function monthGrid(y, m) {

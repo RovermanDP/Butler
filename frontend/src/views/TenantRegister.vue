@@ -1,16 +1,21 @@
 <script setup>
-import { reactive, ref, computed, nextTick } from 'vue'
-import { addOneYear } from '../lib/contractDates'
+import { reactive, ref, computed, nextTick, watch } from 'vue'
+import { addOneYear, formatKoYmd } from '../lib/contractDates'
 import { monthlyTotal } from '../lib/contractAmount'
+import { firstPaymentDate, generateSchedule, pastUnpaidCount, PAST_UNPAID_OPTIONS } from '../lib/payment'
 import { formatWon } from '../lib/format'
 import DatePickerModal from '../components/DatePickerModal.vue'
+import WheelPicker from '../components/WheelPicker.vue'
+import ProofSheet from '../components/ProofSheet.vue'
+import PaymentScheduleModal from '../components/PaymentScheduleModal.vue'
 
-// 화면 10a~10h — Flow E 세입자 등록 위저드 · Step1(세입자 정보) + Step2(계약 정보).
+// 화면 10a~10m — Flow E 세입자 등록 위저드 · Step1(세입자 정보)+Step2(계약 정보)+Step3(납부 정보).
 // 한 '세입자 등록' 화면 안에서 스텝만 전환한다(tbar·stepdots·하단 액션바 chrome 공유).
 //   Step1(10a~10d): 개인/사업자 토글로 하단 섹션 분기(PRD 4.5 E-2).
 //   Step2(10e~10h): 월세/전세 토글로 월세 row 동적 추가·제거 + 매월 입금 예정 총액 자동 합산(E-3).
-// 이 세션 범위 = Step1·Step2. [다음]은 Step3(납부 정보) 진입점만 잡아두고 안내한다.
-// 결정적 계산은 LLM이 아닌 lib 으로 분리(SRP·OSoT): 날짜=contractDates, 매월 총액=contractAmount.
+//   Step3(10i~10m): 납부일 휠·선불/후불 첫 납부일 자동·입금자명·과거 미납 휠·납부 회차표(확인완료 잠김)·증빙 5종 모달(E-4).
+// [다음]은 등록 완료(저장·10n/10o)의 진입점만 잡아두고 안내한다(차기 세션 범위).
+// 결정적 계산은 LLM이 아닌 lib 으로 분리(SRP·OSoT): 날짜=contractDates, 매월 총액=contractAmount, 첫 납부일·회차=payment.
 const props = defineProps({
   // 건물 드롭다운 소스(App 의 buildings 단일 소스 그대로 전달).
   buildings: { type: Array, default: () => [] },
@@ -49,17 +54,38 @@ const form = reactive({
   maintenanceVat: false,
   etc1Vat: false,
   etc2Vat: false,
+  // Step3 납부 정보 — 첫 납부일·회차는 결정적 계산(lib/payment)으로 파생한다.
+  paymentDay: 1, // 납부일 1~31 (월별 말일 보정)
+  paymentTiming: '선불', // '선불'(당월) | '후불'(익월)
+  depositorSame: true, // '계약자 명과 동일' 체크 — true면 입금자명 = 대표 계약자명
+  depositorName: '', // 직접 입력 입금자명(depositorSame=false 일 때만 사용)
+  pastUnpaid: '미납없음', // '미납없음' | '1개월' | '2개월' (선택분만큼 과거 회차 미납 시드)
+  scheduleConfirmed: false, // 납부 내역 회차표 '확인 완료' → 잠김
+  // 증빙 발급 설정(proof_kind 5종) + 선택값별 하위 필드. ⚠ expenses.proof_type 와 별개 개념.
+  proofKind: '', // '' = 미선택('선택' 표시) / 5종 중 하나
+  proofPhone: '', // 현금영수증(개인소득공제용)
+  proofBizRegNo: '', // 현금영수증(사업자증빙용)
+  proofEmail: '', // 세금계산서 / 계산서
+  proofLicenseFileName: '', // 세금계산서 / 계산서 — 사업자등록증(Storage 저장은 최종 단계)
 })
 
-// 위저드 스텝(1=세입자 정보, 2=계약 정보). 본문 스크롤 위치 리셋용 ref 도 함께 둔다.
+// 위저드 스텝(1=세입자 정보, 2=계약 정보, 3=납부 정보). 본문 스크롤 위치 리셋용 ref 도 함께 둔다.
 const step = ref(1)
 const bodyEl = ref(null)
 
 // 계약기간 캘린더 모달 대상: null | 'start' | 'end'
 const picker = ref(null)
 const submitAttempted = ref(false)
-const nextNotice = ref('') // Step3 미구현 안내 토스트
+const nextNotice = ref('') // 등록 완료(저장) 미구현 안내 토스트
 let noticeTimer = null
+
+// Step3 오버레이 상태: 휠 피커 대상(null|'day'|'unpaid')·회차표·증빙 모달.
+const wheelTarget = ref(null)
+const showSchedule = ref(false)
+const showProof = ref(false)
+// 과거 미납 선택 시 알림톡(mock) 발송 안내 토스트(스텝3 전용).
+const payNotice = ref('')
+let payNoticeTimer = null
 
 const selectedBuilding = computed(() =>
   props.buildings.find((b) => b.id === form.buildingId) ?? null,
@@ -163,6 +189,142 @@ function showErr2(key) {
   return submitAttempted.value && !!step2Errors.value[key]
 }
 
+// ===== Step3 납부 정보 =====
+// 대표 계약자명 — 개인=계약자1, 사업자=사업자명. 입금자명 기본값/‘계약자 명과 동일’의 출처.
+const primaryName = computed(() =>
+  (form.tenantType === '개인' ? form.contractors[0]?.name : form.bizName)?.trim() || '',
+)
+// 화면에 보이는 입금자명: ‘동일’ 체크면 대표 계약자명, 아니면 직접 입력값.
+const depositorDisplay = computed(() => (form.depositorSame ? primaryName.value : form.depositorName))
+
+// 첫 납부일(선불=당월/후불=익월, 말일 보정) — 결정적 계산은 lib/payment 단일 출처를 호출만 한다.
+const firstPay = computed(() => firstPaymentDate(form.paymentDay, form.paymentTiming))
+const firstPayLabel = computed(() => formatKoYmd(firstPay.value))
+
+// 납부 회차표 — 첫 납부일~계약 종료일, 매월 1회차. 과거 미납 선택분은 가장 이른 회차를 ‘미납’ 시드.
+const schedule = computed(() =>
+  generateSchedule({
+    firstPayment: firstPay.value,
+    contractEnd: form.end,
+    amount: total.value,
+    paymentDay: form.paymentDay,
+    unpaidCount: pastUnpaidCount(form.pastUnpaid),
+  }),
+)
+
+// 납부일 휠 옵션 1~31 / 과거 미납 휠 옵션(미납없음/1·2개월). value 는 lib 가 쓰는 원본값.
+const dayOptions = Array.from({ length: 31 }, (_, i) => ({ value: i + 1, label: `${i + 1} 일` }))
+const unpaidOptions = PAST_UNPAID_OPTIONS.map((v) => ({ value: v, label: v }))
+
+// 납부 파라미터(납부일·선불후불·과거미납)가 바뀌면 회차표가 달라지므로 ‘확인 완료’ 잠김을 해제한다.
+// (확인했던 표와 실제 회차가 어긋나는 것을 방지 — 변경 후 재확인을 요구.)
+function invalidateSchedule() {
+  form.scheduleConfirmed = false
+}
+
+function setTiming(timing) {
+  if (form.paymentTiming === timing) return
+  form.paymentTiming = timing
+  invalidateSchedule()
+}
+
+// 휠 확인 — 대상에 따라 납부일/과거 미납을 반영. 과거 미납 선택 시 알림톡(mock) 안내.
+function onWheelConfirm(value) {
+  if (wheelTarget.value === 'day') {
+    if (form.paymentDay !== value) {
+      form.paymentDay = value
+      invalidateSchedule()
+    }
+  } else if (wheelTarget.value === 'unpaid') {
+    if (form.pastUnpaid !== value) {
+      form.pastUnpaid = value
+      invalidateSchedule()
+      if (pastUnpaidCount(value) > 0) notifyMockUnpaid(value)
+    }
+  }
+  wheelTarget.value = null
+}
+
+// 과거 미납 선택 → 세입자 알림톡(mock) 발송 안내(PRD 3장: 미납 회차 시드 + 알림톡 mock).
+// 실제 notifications insert 는 등록 완료(저장) 단계에서 schedule 의 미납 회차를 근거로 수행한다.
+function notifyMockUnpaid(value) {
+  payNotice.value = `미납 ${value} 안내 알림톡을 세입자에게 발송했어요 (mock)`
+  clearTimeout(payNoticeTimer)
+  payNoticeTimer = setTimeout(() => (payNotice.value = ''), 2800)
+}
+
+// ‘계약자 명과 동일’ 토글 — 해제 시 현재 대표 계약자명을 채워 바로 수정 가능하게 한다.
+function toggleDepositorSame() {
+  form.depositorSame = !form.depositorSame
+  if (!form.depositorSame && !form.depositorName.trim()) form.depositorName = primaryName.value
+}
+
+// 회차표는 매월 총액(Step2)·계약 종료일(Step1)에서도 파생되므로, 확인 후 그 값이 바뀌면
+// 잠김을 풀어 재확인을 요구한다(확인했던 표와 실제 회차가 어긋나는 것을 방지).
+watch([total, () => form.end], () => {
+  if (form.scheduleConfirmed) form.scheduleConfirmed = false
+})
+
+function openSchedule() {
+  if (form.scheduleConfirmed) return // 확인 완료 후 잠김(재선택 불가)
+  showSchedule.value = true
+}
+
+function onScheduleConfirm() {
+  // 방어: 회차가 0건이면 잠그지 않는다(모달 버튼도 비활성이지만 부모에서도 이중 차단).
+  if (schedule.value.length === 0) return
+  form.scheduleConfirmed = true
+  showSchedule.value = false
+}
+
+// 증빙 종류 선택 — 종류가 바뀌면 이전 종류의 하위 필드를 비워 잘못된 값이 남지 않게 한다(분기 누락 방어).
+function onProofSelect(kind) {
+  if (form.proofKind !== kind) {
+    form.proofKind = kind
+    form.proofPhone = ''
+    form.proofBizRegNo = ''
+    form.proofEmail = ''
+    form.proofLicenseFileName = ''
+  }
+  showProof.value = false
+}
+
+function onLicensePick(event) {
+  const file = event.target.files?.[0]
+  form.proofLicenseFileName = file ? file.name : ''
+}
+
+// 증빙 종류별 하위 필수 필드 — 분기 누락 없이 한 곳에서 정의(OSoT).
+const proofNeedsPhone = computed(() => form.proofKind === '현금영수증(개인소득공제용)')
+const proofNeedsBizReg = computed(() => form.proofKind === '현금영수증(사업자증빙용)')
+const proofNeedsEmail = computed(() => form.proofKind === '세금계산서' || form.proofKind === '계산서')
+
+// Step3 필수값 검증 — 입금자명·납부 내역 확인·증빙 종류(+하위 필드).
+// 증빙은 CLAUDE.md DB 제약("증빙 종류별 하위 필드 필수")을 프론트에서도 동일하게 막는다.
+//   세금계산서/계산서(10m-d·e)는 이메일 + 사업자등록증 업로드가 모두 하위 필수 필드.
+const step3Errors = computed(() => {
+  const e = {}
+  if (!depositorDisplay.value.trim()) e.depositor = '입금자명을 입력해주세요'
+  if (!form.scheduleConfirmed) e.schedule = '납부 내역을 확인해주세요'
+  if (!form.proofKind) e.proof = '증빙 종류를 선택해주세요'
+  else if (proofNeedsPhone.value && !form.proofPhone.trim()) e.proof = '휴대폰 번호를 입력해주세요'
+  else if (proofNeedsBizReg.value && !form.proofBizRegNo.trim()) e.proof = '사업자 등록 번호를 입력해주세요'
+  else if (proofNeedsEmail.value && !form.proofEmail.trim()) e.proof = '이메일 주소를 입력해주세요'
+  else if (proofNeedsEmail.value && !form.proofLicenseFileName) e.proof = '사업자 등록증을 업로드해주세요'
+  return e
+})
+const isStep3Valid = computed(() => Object.keys(step3Errors.value).length === 0)
+function showErr3(key) {
+  return submitAttempted.value && !!step3Errors.value[key]
+}
+// 증빙 하위 필드별 시각 에러 — 같은 'proof' 에러라도 비어 있는 필드에만 빨간 테두리를 준다(원인 명확화).
+const proofPhoneErr = computed(() => submitAttempted.value && proofNeedsPhone.value && !form.proofPhone.trim())
+const proofBizRegErr = computed(() => submitAttempted.value && proofNeedsBizReg.value && !form.proofBizRegNo.trim())
+const proofEmailErr = computed(() => submitAttempted.value && proofNeedsEmail.value && !form.proofEmail.trim())
+const proofLicenseErr = computed(
+  () => submitAttempted.value && proofNeedsEmail.value && !!form.proofEmail.trim() && !form.proofLicenseFileName,
+)
+
 // 필수값 검증 — 토글 분기에 따라 다른 필드를 본다(단일 출처).
 const errors = computed(() => {
   const e = {}
@@ -201,10 +363,17 @@ function buildPayload() {
     snapshot.monthlyRent = ''
     snapshot.rentVat = false
   }
+  // 입금자명은 ‘동일’ 체크 여부를 흡수해 최종값 하나로 정규화(저장 단계에서 분기 불필요).
+  snapshot.depositorName = depositorDisplay.value
+  // 결정적 파생값을 함께 실어 보낸다(완료/저장 단계가 재계산 없이 그대로 persist):
+  //   첫 납부일·매월 총액·payments 회차(미납 시드 포함).
+  snapshot.firstPaymentDate = firstPay.value
+  snapshot.monthlyTotal = total.value
+  snapshot.schedule = schedule.value
   return snapshot
 }
 
-// [다음]: Step1 → 검증 후 Step2 진입 / Step2 → 검증 후 Step3 진입점 안내(차기 세션).
+// [다음]: Step1·2 → 검증 후 다음 스텝 / Step3 → 검증 후 등록 완료(저장) 진입점 안내(차기 세션).
 function onNext() {
   submitAttempted.value = true
   if (step.value === 1) {
@@ -214,16 +383,29 @@ function onNext() {
     scrollBodyTop()
     return
   }
-  if (!isStep2Valid.value) return
-  // Step3(납부 정보)는 다음 세션 범위 — 진입점만 잡아두고 누적 입력값(정규화)을 상위로 넘긴다.
+  if (step.value === 2) {
+    if (!isStep2Valid.value) return
+    step.value = 3
+    submitAttempted.value = false
+    scrollBodyTop()
+    return
+  }
+  // Step3 완료 → 등록 완료(저장·10n/10o)는 다음 세션 범위. 진입점만 잡고 누적 입력(정규화·파생값 포함)을 올린다.
+  if (!isStep3Valid.value) return
   emit('next', buildPayload())
-  nextNotice.value = 'Step 2 입력 완료 — Step 3(납부 정보)는 다음 단계에서 제공됩니다'
+  nextNotice.value = 'Step 3 입력 완료 — 등록 완료(저장)는 다음 단계에서 제공됩니다'
   clearTimeout(noticeTimer)
   noticeTimer = setTimeout(() => (nextNotice.value = ''), 2800)
 }
 
-// [뒤로]/상단 ‹: Step2 → Step1 복귀 / Step1 → 위저드 종료(진입 직전 화면).
+// [뒤로]/상단 ‹: Step3 → Step2 / Step2 → Step1 / Step1 → 위저드 종료(진입 직전 화면).
 function onBack() {
+  if (step.value === 3) {
+    step.value = 2
+    submitAttempted.value = false
+    scrollBodyTop()
+    return
+  }
   if (step.value === 2) {
     step.value = 1
     submitAttempted.value = false
@@ -250,11 +432,11 @@ function onBack() {
       <!-- Step 헤더 + 진행 도트 (스텝에 따라 라벨·활성 도트 전환) -->
       <div class="step-head">
         <div>
-          <span class="step-tag">{{ step === 1 ? 'Step.01' : 'Step.02' }}</span>
-          <div class="step-title">{{ step === 1 ? '세입자 정보' : '계약 정보' }}</div>
+          <span class="step-tag">Step.0{{ step }}</span>
+          <div class="step-title">{{ ['', '세입자 정보', '계약 정보', '납부 정보'][step] }}</div>
         </div>
         <div class="stepdots">
-          <i :class="{ on: step === 1 }"></i><i :class="{ on: step === 2 }"></i><i></i>
+          <i :class="{ on: step === 1 }"></i><i :class="{ on: step === 2 }"></i><i :class="{ on: step === 3 }"></i>
         </div>
       </div>
       <div class="divider full"></div>
@@ -435,7 +617,7 @@ function onBack() {
       </template>
 
       <!-- ===================== Step 2 · 계약 정보 (10e~10h) ===================== -->
-      <template v-else>
+      <template v-else-if="step === 2">
         <!-- 계약형태 토글 (월세 기본 / 전세) -->
         <label class="flab"><span class="req"></span>계약형태</label>
         <div class="seg">
@@ -492,6 +674,125 @@ function onBack() {
         <label class="flab total-lab">매월 입금 예정 총액</label>
         <div class="total-box">{{ formatWon(total) }}</div>
       </template>
+
+      <!-- ===================== Step 3 · 납부 정보 (10i~10m) ===================== -->
+      <template v-else>
+        <!-- 납부일 — 탭 → 휠 피커(1~31일, 말일 보정) -->
+        <label class="flab fl-hint"><span class="req"></span>납부일<span class="taphint">👈 탭 → 휠 피커</span></label>
+        <button type="button" class="fin tapfield filled" @click="wheelTarget = 'day'">
+          {{ form.paymentDay }} 일<span class="caret">⌄</span>
+        </button>
+
+        <!-- 계약 조건(선불/후불) → 첫 납부일 자동 표기 -->
+        <label class="flab"><span class="req"></span>계약 조건</label>
+        <div class="seg">
+          <button type="button" class="segbtn" :class="{ on: form.paymentTiming === '선불' }" @click="setTiming('선불')">
+            선불
+          </button>
+          <button type="button" class="segbtn" :class="{ on: form.paymentTiming === '후불' }" @click="setTiming('후불')">
+            후불
+          </button>
+        </div>
+        <div class="firstpay"><span class="ar">→</span>{{ firstPayLabel }}</div>
+        <div class="hint-row"><span class="ex">!</span>선불/후불에 따라 세입자가 안내 받을 첫 납부일자에요</div>
+
+        <!-- 입금자명 — 기본 = 대표 계약자명('계약자 명과 동일' 체크). 해제 시 직접 입력. -->
+        <label class="flab"><span class="req"></span>입금자명</label>
+        <div v-if="form.depositorSame" class="namebox">
+          <span class="nm">{{ primaryName || '계약자명을 먼저 입력해주세요' }}</span>
+          <button type="button" class="same-check on" @click="toggleDepositorSame">
+            <span class="cb">✓</span>계약자 명과 동일
+          </button>
+        </div>
+        <template v-else>
+          <div class="fin name-edit" :class="{ filled: form.depositorName.trim(), err: showErr3('depositor') }">
+            <input
+              v-model="form.depositorName"
+              class="name-in"
+              type="text"
+              placeholder="입금자명을 입력해주세요"
+            />
+            <button type="button" class="same-check" @click="toggleDepositorSame">
+              <span class="cb off"></span>계약자 명과 동일
+            </button>
+          </div>
+          <p v-if="showErr3('depositor')" class="ferr">{{ step3Errors.depositor }}</p>
+        </template>
+        <div class="hint-row"><span class="ex">!</span>입금자 명이 다를 경우 자동 수납되지 않아요</div>
+
+        <!-- 과거 미납 내역 — 탭 → 휠 피커. 선택 시 미납 회차 시드 + 알림톡(mock). -->
+        <label class="flab fl-hint"><span class="req"></span>과거 미납 내역<span class="taphint">👈 탭 → 휠 피커</span></label>
+        <button type="button" class="fin tapfield filled" @click="wheelTarget = 'unpaid'">
+          {{ form.pastUnpaid }}<span class="caret">⌄</span>
+        </button>
+
+        <!-- 납부 내역 — '확인하기' → 회차표. 확인 완료 시 잠김(재선택 불가). -->
+        <label class="flab fl-hint"><span class="req"></span>납부 내역<span class="taphint">👈 탭 → 납부 내역 확인</span></label>
+        <button
+          v-if="!form.scheduleConfirmed"
+          type="button"
+          class="fin tapfield"
+          :class="{ err: showErr3('schedule') }"
+          @click="openSchedule"
+        >
+          확인하기<span class="caret">⌄</span>
+        </button>
+        <div v-else class="fin confirmed">확인완료 <span class="ck">✓</span></div>
+        <p v-if="showErr3('schedule')" class="ferr">{{ step3Errors.schedule }}</p>
+
+        <!-- 증빙 관리 — '선택' → 증빙 모달(5종). 선택값에 따라 하위 필드 분기. -->
+        <label class="flab fl-hint"><span class="req"></span>증빙 관리<span class="taphint">👈 탭 → 증빙 모달</span></label>
+        <button
+          type="button"
+          class="fin tapfield"
+          :class="{ filled: form.proofKind, err: showErr3('proof') && !form.proofKind }"
+          @click="showProof = true"
+        >
+          {{ form.proofKind || '선택' }}<span class="caret">⌄</span>
+        </button>
+
+        <!-- 증빙 종류별 하위 필드 분기(10m-b~e) -->
+        <template v-if="proofNeedsPhone">
+          <input
+            v-model="form.proofPhone"
+            class="fin input proof-sub"
+            :class="{ filled: form.proofPhone.trim(), err: proofPhoneErr }"
+            type="tel"
+            inputmode="numeric"
+            placeholder="휴대폰 번호"
+          />
+        </template>
+        <template v-else-if="proofNeedsBizReg">
+          <input
+            v-model="form.proofBizRegNo"
+            class="fin input proof-sub"
+            :class="{ filled: form.proofBizRegNo.trim(), err: proofBizRegErr }"
+            type="text"
+            inputmode="numeric"
+            placeholder="사업자 등록 번호"
+          />
+        </template>
+        <template v-else-if="proofNeedsEmail">
+          <input
+            v-model="form.proofEmail"
+            class="fin input proof-sub"
+            :class="{ filled: form.proofEmail.trim(), err: proofEmailErr }"
+            type="email"
+            placeholder="이메일 주소"
+          />
+          <label class="flab"><span class="req"></span>사업자 등록증</label>
+          <label class="uploadbox" :class="{ err: proofLicenseErr, done: form.proofLicenseFileName }">
+            <input type="file" class="file-hidden" accept=".pdf,image/*" @change="onLicensePick" />
+            <span class="up-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 4V14" /><path d="M8 10L12 14L16 10" /><path d="M5 18H19" />
+              </svg>
+            </span>
+            {{ form.proofLicenseFileName || '사업자 등록증을 업로드해주세요' }}
+          </label>
+        </template>
+        <p v-if="showErr3('proof')" class="ferr">{{ step3Errors.proof }}</p>
+      </template>
     </div>
 
     <!-- 하단 고정 액션바 -->
@@ -504,9 +805,12 @@ function onBack() {
       <button class="ff-next" type="button" @click="onNext">다음</button>
     </div>
 
-    <!-- Step3 안내 토스트 -->
+    <!-- 등록 완료(저장) 안내 + 과거 미납 알림톡(mock) 안내 토스트 -->
     <Transition name="notice">
       <div v-if="nextNotice" class="next-notice">{{ nextNotice }}</div>
+    </Transition>
+    <Transition name="notice">
+      <div v-if="payNotice" class="next-notice mock">{{ payNotice }}</div>
     </Transition>
 
     <!-- 계약기간 캘린더 모달 -->
@@ -516,6 +820,45 @@ function onBack() {
       :title="picker === 'start' ? '계약 시작일 선택' : '계약 종료일 선택'"
       @confirm="onPickConfirm"
       @cancel="picker = null"
+    />
+
+    <!-- Step3 — 납부일(1~31) / 과거 미납 휠 피커 (10i-1·10i-2) -->
+    <WheelPicker
+      v-if="wheelTarget === 'day'"
+      :options="dayOptions"
+      :model-value="form.paymentDay"
+      title="입금 예정일"
+      @confirm="onWheelConfirm"
+      @cancel="wheelTarget = null"
+    />
+    <WheelPicker
+      v-else-if="wheelTarget === 'unpaid'"
+      :options="unpaidOptions"
+      :model-value="form.pastUnpaid"
+      title="과거 미납 내역"
+      desc="계약기간 중 아직 미납된 내역이 있다면 선택해주세요. 세입자에게 알림톡을 보내줘요."
+      @confirm="onWheelConfirm"
+      @cancel="wheelTarget = null"
+    />
+
+    <!-- Step3 — 납부 내역 회차표 (10k·10l). 확인 완료 시 잠김. -->
+    <PaymentScheduleModal
+      v-if="showSchedule"
+      :rows="schedule"
+      :payment-day="form.paymentDay"
+      :lease-type="form.leaseType"
+      :payment-timing="form.paymentTiming"
+      :amount="total"
+      @confirm="onScheduleConfirm"
+      @cancel="showSchedule = false"
+    />
+
+    <!-- Step3 — 증빙 발급 설정 모달 (10m, 5종) -->
+    <ProofSheet
+      v-if="showProof"
+      :model-value="form.proofKind"
+      @select="onProofSelect"
+      @cancel="showProof = false"
     />
   </div>
 </template>
@@ -841,6 +1184,182 @@ function onBack() {
   font-weight: 800;
 }
 
+/* ===== Step3 납부 정보 ===== */
+/* 라벨 우측 '탭 → …' 힌트 뱃지 */
+.flab.fl-hint {
+  justify-content: flex-start;
+}
+.taphint {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 800;
+  color: #fff;
+  background: var(--accent);
+  padding: 2px 8px;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+/* 탭하면 휠/모달이 열리는 값 표시 필드(납부일·과거미납·납부내역·증빙) */
+.tapfield {
+  width: 100%;
+  justify-content: center;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--gray-5);
+  font-weight: 700;
+  gap: 6px;
+}
+.tapfield.filled {
+  color: var(--ink);
+}
+.tapfield.err {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.tapfield .caret {
+  color: var(--gray-4);
+  font-size: 12px;
+}
+/* 첫 납부일 자동 표기 박스 */
+.firstpay {
+  margin-top: 9px;
+  background: var(--gray-1);
+  border-radius: var(--r-input);
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--accent-deep);
+}
+.firstpay .ar {
+  color: var(--accent);
+  font-weight: 800;
+}
+/* 안내 힌트 줄(!  …) */
+.hint-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--gray-4);
+  margin-top: 7px;
+  font-weight: 600;
+}
+.hint-row .ex {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--gray-3);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 800;
+  flex: 0 0 auto;
+}
+/* 입금자명 — '계약자 명과 동일' 표시 박스 + 체크 토글 */
+.namebox {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  padding: 13px 14px;
+}
+.namebox .nm {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.same-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gray-6);
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  flex: 0 0 auto;
+}
+.same-check .cb {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+}
+.same-check .cb.off {
+  background: var(--gray-3);
+}
+/* 입금자명 직접 입력(동일 해제 시) — 입력 + 체크 토글 한 줄 */
+.name-edit {
+  gap: 8px;
+  border: 1px solid transparent;
+  padding: 6px 12px;
+}
+.name-edit.filled {
+  background: #fff;
+  border-color: var(--accent);
+}
+.name-edit.err {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.name-in {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  padding: 7px 0;
+  font-weight: 700;
+}
+.name-in::placeholder {
+  color: var(--gray-4);
+  font-weight: 400;
+}
+/* 납부 내역 확인완료 잠김 표시 */
+.fin.confirmed {
+  background: var(--gray-1);
+  color: var(--gray-5);
+  justify-content: center;
+  font-weight: 700;
+  gap: 7px;
+}
+.fin.confirmed .ck {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ok);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+}
+/* 증빙 하위 입력 필드 */
+.proof-sub {
+  margin-top: 10px;
+}
+
 /* 섹션 헤더(계약자/사업자/업로드) */
 .section-h {
   display: flex;
@@ -907,6 +1426,20 @@ function onBack() {
   justify-content: center;
   gap: 7px;
   cursor: pointer;
+  border: 1px solid transparent;
+}
+/* 업로드 완료/미입력(필수 누락) 상태 — 증빙 사업자등록증 필수 검증 시각 피드백 */
+.uploadbox.done {
+  background: #fff;
+  border-color: var(--accent);
+}
+.uploadbox.err {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.uploadbox.err .up-ico svg {
+  stroke: var(--danger);
 }
 .file-hidden {
   display: none;
@@ -987,6 +1520,11 @@ function onBack() {
   font-size: 12.5px;
   font-weight: 700;
   text-align: center;
+}
+/* 과거 미납 알림톡(mock) 안내 — 즐겨찾기·증빙 계열 warn(amber) 톤으로 구분 */
+.next-notice.mock {
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 .notice-enter-active,
 .notice-leave-active {
