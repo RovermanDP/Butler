@@ -128,6 +128,26 @@ function backFromTenant() {
   screen.value = selectedBuilding.value ? 'detail' : 'list'
 }
 
+// 세입자 등록 완료 [완료] — 목록·집계를 다시 불러온 뒤 진입했던 건물 상세(없으면 목록)로 돌아간다.
+// ⚠ 반영 범위: 여기서 즉시 반영되는 것은 정보 탭의 집계 지표(입주율·임대수익·이달 신규 등, building_stats View)뿐이다.
+//   상세의 세입자·수납 탭 '시각' 반영은 Flow B-2(PRD WBS Day 6 · 화면 6·7) 범위다 — 그 탭들은 아직 미구현(헤더만).
+//   등록 데이터(tenants·contracts·payments)는 이미 적재되어 있어, B-2가 해당 탭에서 조회·렌더하면 자동으로 닫힌다.
+//   (PRD 4.5 완료 기준 "세입자·수납 탭 반영"은 Flow E 단독이 아닌 cross-flow 통합 항목.)
+async function onTenantDone(buildingId) {
+  const keepId = buildingId || selectedBuilding.value?.id || null
+  await loadBuildings() // 성공 시 screen='list'(또는 'empty'), buildings/stats 최신화
+  if (keepId) {
+    const refreshed = buildings.value.find((b) => b.id === keepId)
+    if (refreshed) {
+      selectedBuilding.value = refreshed // 갱신된 객체로 교체(stats 키는 id 라 그대로 합류)
+      screen.value = 'detail'
+    }
+  }
+  flash.value = '세입자가 등록되었습니다'
+  clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => (flash.value = ''), 2800)
+}
+
 // 목록 카드 탭 → 단일 건물 정보 탭(화면 4) 진입.
 function openDetail(building) {
   selectedBuilding.value = building
@@ -207,6 +227,7 @@ function backToList() {
       :buildings="buildings"
       :preselect-building-id="selectedBuilding?.id ?? ''"
       @back="backFromTenant"
+      @done="onTenantDone"
     />
 
     <BuildingManageSheet

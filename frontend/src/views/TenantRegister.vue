@@ -1,9 +1,10 @@
 <script setup>
 import { reactive, ref, computed, nextTick, watch } from 'vue'
-import { addOneYear, formatKoYmd } from '../lib/contractDates'
+import { addOneYear, formatKoYmd, formatShortDate } from '../lib/contractDates'
 import { monthlyTotal } from '../lib/contractAmount'
 import { firstPaymentDate, generateSchedule, pastUnpaidCount, PAST_UNPAID_OPTIONS } from '../lib/payment'
 import { formatWon } from '../lib/format'
+import { registerTenant } from '../lib/tenants'
 import DatePickerModal from '../components/DatePickerModal.vue'
 import WheelPicker from '../components/WheelPicker.vue'
 import ProofSheet from '../components/ProofSheet.vue'
@@ -14,7 +15,7 @@ import PaymentScheduleModal from '../components/PaymentScheduleModal.vue'
 //   Step1(10a~10d): 개인/사업자 토글로 하단 섹션 분기(PRD 4.5 E-2).
 //   Step2(10e~10h): 월세/전세 토글로 월세 row 동적 추가·제거 + 매월 입금 예정 총액 자동 합산(E-3).
 //   Step3(10i~10m): 납부일 휠·선불/후불 첫 납부일 자동·입금자명·과거 미납 휠·납부 회차표(확인완료 잠김)·증빙 5종 모달(E-4).
-// [다음]은 등록 완료(저장·10n/10o)의 진입점만 잡아두고 안내한다(차기 세션 범위).
+// 완료(10n/10o): Step3 [다음] → Supabase 적재(lib/tenants) → 등록 완료 화면(요약·안내) → 완료/추가 등록하기(E-5).
 // 결정적 계산은 LLM이 아닌 lib 으로 분리(SRP·OSoT): 날짜=contractDates, 매월 총액=contractAmount, 첫 납부일·회차=payment.
 const props = defineProps({
   // 건물 드롭다운 소스(App 의 buildings 단일 소스 그대로 전달).
@@ -23,7 +24,8 @@ const props = defineProps({
   preselectBuildingId: { type: String, default: '' },
 })
 
-const emit = defineEmits(['back', 'next'])
+// back: 위저드 종료(진입 직전 화면) / done: 등록 완료 → 건물 상세(Flow B 집계 갱신).
+const emit = defineEmits(['back', 'done'])
 
 // 토글 전환 시에도 공통 입력값은 유지되도록 모든 스텝의 입력을 한 reactive 폼에 모은다
 // (개인/사업자·월세/전세 전환 시 전용 필드만 렌더 분기, 입력값은 보존).
@@ -35,7 +37,8 @@ const form = reactive({
   endAuto: false, // true면 '자동 · +1년' 뱃지 노출(수동 수정 시 해제)
   tenantType: '개인', // '개인' | '사업자'
   memo: '',
-  contractFileName: '', // 임대차 계약서 업로드 — 선택 파일명(실제 Storage 업로드는 최종 저장 단계)
+  contractFileName: '', // 임대차 계약서 업로드 — 선택 파일명(표시용)
+  contractFile: null, // 실제 File 객체(완료 단계에서 Storage 업로드)
   // 개인 경로: 계약자1 + 공동계약자
   contractors: [{ name: '', phone: '' }],
   // 사업자 경로
@@ -66,17 +69,26 @@ const form = reactive({
   proofPhone: '', // 현금영수증(개인소득공제용)
   proofBizRegNo: '', // 현금영수증(사업자증빙용)
   proofEmail: '', // 세금계산서 / 계산서
-  proofLicenseFileName: '', // 세금계산서 / 계산서 — 사업자등록증(Storage 저장은 최종 단계)
+  proofLicenseFileName: '', // 세금계산서 / 계산서 — 사업자등록증 파일명(표시용)
+  proofLicenseFile: null, // 실제 File 객체(완료 단계에서 Storage 업로드)
 })
+
+// 폼 초기 스냅샷 — '추가 등록하기'에서 동일 폼을 깨끗이 되돌릴 때 쓴다(건물 선택은 호출부에서 유지).
+const FORM_DEFAULTS = JSON.parse(JSON.stringify({ ...form, contractFile: null, proofLicenseFile: null }))
 
 // 위저드 스텝(1=세입자 정보, 2=계약 정보, 3=납부 정보). 본문 스크롤 위치 리셋용 ref 도 함께 둔다.
 const step = ref(1)
 const bodyEl = ref(null)
 
+// 완료(10n/10o) 상태 — 저장 성공 시 done=true 로 등록 완료 화면으로 전환한다.
+const done = ref(false)
+const saving = ref(false) // 저장 진행 중(중복 제출·연속 클릭 방어, 버튼 비활성)
+const result = ref(null) // 완료 화면 요약(저장 시점 스냅샷 — 이후 폼이 리셋돼도 화면 유지)
+
 // 계약기간 캘린더 모달 대상: null | 'start' | 'end'
 const picker = ref(null)
 const submitAttempted = ref(false)
-const nextNotice = ref('') // 등록 완료(저장) 미구현 안내 토스트
+const nextNotice = ref('') // 저장 실패 안내 토스트(danger)
 let noticeTimer = null
 
 // Step3 오버레이 상태: 휠 피커 대상(null|'day'|'unpaid')·회차표·증빙 모달.
@@ -128,7 +140,8 @@ function removeContractor(index) {
 }
 
 function onFilePick(event) {
-  const file = event.target.files?.[0]
+  const file = event.target.files?.[0] ?? null
+  form.contractFile = file
   form.contractFileName = file ? file.name : ''
 }
 
@@ -285,12 +298,14 @@ function onProofSelect(kind) {
     form.proofBizRegNo = ''
     form.proofEmail = ''
     form.proofLicenseFileName = ''
+    form.proofLicenseFile = null
   }
   showProof.value = false
 }
 
 function onLicensePick(event) {
-  const file = event.target.files?.[0]
+  const file = event.target.files?.[0] ?? null
+  form.proofLicenseFile = file
   form.proofLicenseFileName = file ? file.name : ''
 }
 
@@ -357,24 +372,66 @@ function scrollBodyTop() {
 // 상위로 넘길 payload — 라이브 폼은 토글 왕복 시 값 복원 UX 때문에 그대로 두되,
 // 전세 계약은 월세 항목이 폼에서 빠지므로 payload에서도 제거한다(PRD: 전세 monthly_rent=null).
 // 숨겨진 월세 잔존값이 Step3/저장 단계에서 전세 계약에 잘못 실리는 것을 방지.
+// File 객체는 JSON 직렬화로 깨지므로 일단 빼고 클론한 뒤 원본 참조를 다시 붙인다.
 function buildPayload() {
-  const snapshot = JSON.parse(JSON.stringify(form))
+  const snapshot = JSON.parse(JSON.stringify({ ...form, contractFile: null, proofLicenseFile: null }))
   if (snapshot.leaseType === '전세') {
     snapshot.monthlyRent = ''
     snapshot.rentVat = false
   }
   // 입금자명은 ‘동일’ 체크 여부를 흡수해 최종값 하나로 정규화(저장 단계에서 분기 불필요).
   snapshot.depositorName = depositorDisplay.value
-  // 결정적 파생값을 함께 실어 보낸다(완료/저장 단계가 재계산 없이 그대로 persist):
+  // 결정적 파생값을 함께 실어 보낸다(저장 단계가 재계산 없이 그대로 persist):
   //   첫 납부일·매월 총액·payments 회차(미납 시드 포함).
   snapshot.firstPaymentDate = firstPay.value
   snapshot.monthlyTotal = total.value
   snapshot.schedule = schedule.value
+  // 업로드 대상 File 은 원본 참조로 부착(Storage 업로드는 lib/tenants).
+  snapshot.contractFile = form.contractFile
+  snapshot.proofLicenseFile = form.proofLicenseFile
   return snapshot
 }
 
-// [다음]: Step1·2 → 검증 후 다음 스텝 / Step3 → 검증 후 등록 완료(저장) 진입점 안내(차기 세션).
+// 완료 화면(10n/10o) 요약 — 저장 직전 폼 값으로 스냅샷(이후 ‘추가 등록’ 으로 폼이 리셋돼도 화면 유지).
+function buildSummary() {
+  return {
+    tenantName: primaryName.value,
+    buildingName: selectedBuilding.value?.name ?? '',
+    unitNo: form.unitNo,
+    term: `${formatShortDate(form.start)} ~ ${formatShortDate(form.end)}`,
+    leaseType: form.leaseType,
+    deposit: Number(form.deposit) || 0,
+    monthlyRent: form.leaseType === '월세' ? Number(form.monthlyRent) || 0 : null,
+    maintenanceFee: Number(form.maintenanceFee) || 0,
+    etcFee1: Number(form.etcFee1) || 0,
+    etcFee2: Number(form.etcFee2) || 0,
+    warnings: [],
+  }
+}
+
+// Step3 [다음] → Supabase 적재 후 완료 화면 전환. 실패는 삼키지 않고 토스트로 노출, 재시도 가능.
+async function submitRegistration() {
+  if (saving.value) return // 연속 클릭/중복 제출 방어
+  saving.value = true
+  try {
+    const res = await registerTenant(buildPayload())
+    const summary = buildSummary()
+    summary.warnings = res.warnings ?? [] // (선택)파일 업로드·알림톡 mock 부수 실패 안내
+    result.value = summary
+    done.value = true
+    scrollBodyTop()
+  } catch (e) {
+    nextNotice.value = e.message || '등록에 실패했습니다. 다시 시도해주세요'
+    clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => (nextNotice.value = ''), 3600)
+  } finally {
+    saving.value = false
+  }
+}
+
+// [다음]: Step1·2 → 검증 후 다음 스텝 / Step3 → 검증 후 Supabase 적재(완료 화면 전환).
 function onNext() {
+  if (saving.value) return
   submitAttempted.value = true
   if (step.value === 1) {
     if (!isValid.value) return
@@ -390,12 +447,27 @@ function onNext() {
     scrollBodyTop()
     return
   }
-  // Step3 완료 → 등록 완료(저장·10n/10o)는 다음 세션 범위. 진입점만 잡고 누적 입력(정규화·파생값 포함)을 올린다.
   if (!isStep3Valid.value) return
-  emit('next', buildPayload())
-  nextNotice.value = 'Step 3 입력 완료 — 등록 완료(저장)는 다음 단계에서 제공됩니다'
-  clearTimeout(noticeTimer)
-  noticeTimer = setTimeout(() => (nextNotice.value = ''), 2800)
+  submitRegistration()
+}
+
+// 완료 화면 [완료] → 건물 상세로(집계 갱신은 App). [추가 등록하기] → 같은 건물에 새 세입자 등록(폼 리셋).
+function onDone() {
+  emit('done', form.buildingId)
+}
+
+function onRegisterMore() {
+  const keepBuildingId = form.buildingId // 같은 건물에 연속 등록하는 흐름이 자연스럽다
+  Object.assign(form, JSON.parse(JSON.stringify(FORM_DEFAULTS)))
+  form.buildingId = keepBuildingId
+  form.contractors = [{ name: '', phone: '' }] // 중첩 배열은 새 참조로 확실히 초기화
+  form.contractFile = null
+  form.proofLicenseFile = null
+  result.value = null
+  done.value = false
+  step.value = 1
+  submitAttempted.value = false
+  scrollBodyTop()
 }
 
 // [뒤로]/상단 ‹: Step3 → Step2 / Step2 → Step1 / Step1 → 위저드 종료(진입 직전 화면).
@@ -418,17 +490,19 @@ function onBack() {
 
 <template>
   <div class="scr">
-    <div class="tbar">
-      <button class="ico back" type="button" aria-label="뒤로" @click="onBack">
+    <div class="tbar" :class="{ center: done }">
+      <button v-if="!done" class="ico back" type="button" aria-label="뒤로" @click="onBack">
         <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M15 18L9 12L15 6" />
         </svg>
       </button>
-      <span class="ttl">세입자 등록</span>
-      <span class="ico"></span>
+      <span class="ttl">{{ done ? '등록 완료' : '세입자 등록' }}</span>
+      <span v-if="!done" class="ico"></span>
     </div>
 
     <div ref="bodyEl" class="body">
+      <!-- ===================== 위저드(Step 1~3) ===================== -->
+      <template v-if="!done">
       <!-- Step 헤더 + 진행 도트 (스텝에 따라 라벨·활성 도트 전환) -->
       <div class="step-head">
         <div>
@@ -793,21 +867,77 @@ function onBack() {
         </template>
         <p v-if="showErr3('proof')" class="ferr">{{ step3Errors.proof }}</p>
       </template>
+      </template>
+
+      <!-- ===================== 등록 완료 (10n / 10o) ===================== -->
+      <template v-else>
+        <div class="done-check" aria-hidden="true">✓</div>
+        <div class="done-msg">등록이 완료되었어요!</div>
+
+        <!-- 세입자 / 호실 / 계약기간 카드 -->
+        <div class="done-card">
+          <div class="dc-top">
+            <span class="hico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5 11L12 5L19 11V19C19 19.55 18.55 20 18 20H6C5.45 20 5 19.55 5 19V11Z" />
+              </svg>
+            </span>
+            <div>
+              <div class="nm">{{ result.tenantName }}</div>
+              <div class="addr">{{ result.buildingName }} {{ result.unitNo }}</div>
+            </div>
+          </div>
+          <div class="dc-divln"></div>
+          <div class="term"><b>계약기간</b>&nbsp;&nbsp;{{ result.term }}</div>
+        </div>
+
+        <!-- 계약 정보 요약 -->
+        <div class="done-sec-h">
+          <span class="ci-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="12" cy="8" r="3.2" />
+              <path d="M5.5 19C5.5 15.9 8.4 14 12 14C15.6 14 18.5 15.9 18.5 19" />
+            </svg>
+          </span>
+          계약 정보
+        </div>
+        <div class="done-table">
+          <div class="r"><span class="k">계약형태</span><span class="v">{{ result.leaseType }}</span></div>
+          <div class="r"><span class="k">보증금</span><span class="v">{{ formatWon(result.deposit) }}</span></div>
+          <div v-if="result.leaseType === '월세'" class="r"><span class="k">월세</span><span class="v">{{ formatWon(result.monthlyRent) }}</span></div>
+          <div class="r"><span class="k">관리비</span><span class="v">{{ formatWon(result.maintenanceFee) }}</span></div>
+          <div class="r"><span class="k">기타1</span><span class="v">{{ formatWon(result.etcFee1) }}</span></div>
+          <div class="r"><span class="k">기타2</span><span class="v">{{ formatWon(result.etcFee2) }}</span></div>
+        </div>
+
+        <!-- 안내 -->
+        <div class="done-info"><span class="ex">!</span>월세 입금자와 등록된 세입자의 이름이 동일해야해요</div>
+        <div class="done-info"><span class="ex">!</span>세입자 등록 완료 시, 계약 시작 하루전에 해당 세입자에게 납부 알림이 전송돼요</div>
+
+        <!-- (선택)파일 업로드·알림톡 mock 등 부수 작업 경고 — 등록 자체는 성공 -->
+        <div v-for="(w, i) in result.warnings" :key="i" class="done-info warn"><span class="ex">!</span>{{ w }}</div>
+      </template>
     </div>
 
-    <!-- 하단 고정 액션바 -->
-    <div class="formfoot">
-      <button class="ff-back" type="button" aria-label="뒤로" @click="onBack">
+    <!-- 하단 고정 액션바 — 위저드: 뒤로/다음 · 완료: 완료/추가 등록하기 -->
+    <div v-if="!done" class="formfoot">
+      <button class="ff-back" type="button" aria-label="뒤로" :disabled="saving" @click="onBack">
         <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M15 18L9 12L15 6" />
         </svg>
       </button>
-      <button class="ff-next" type="button" @click="onNext">다음</button>
+      <button class="ff-next" type="button" :disabled="saving" @click="onNext">
+        {{ step === 3 ? (saving ? '등록 중…' : '등록 완료') : '다음' }}
+      </button>
+    </div>
+    <div v-else class="done-foot">
+      <button class="df-sub" type="button" @click="onDone">완료</button>
+      <button class="df-main" type="button" @click="onRegisterMore">추가 등록하기</button>
     </div>
 
-    <!-- 등록 완료(저장) 안내 + 과거 미납 알림톡(mock) 안내 토스트 -->
+    <!-- 저장 실패 안내(danger) + 과거 미납 알림톡(mock) 안내 토스트 -->
     <Transition name="notice">
-      <div v-if="nextNotice" class="next-notice">{{ nextNotice }}</div>
+      <div v-if="nextNotice" class="next-notice err">{{ nextNotice }}</div>
     </Transition>
     <Transition name="notice">
       <div v-if="payNotice" class="next-notice mock">{{ payNotice }}</div>
@@ -877,6 +1007,10 @@ function onBack() {
   align-items: center;
   justify-content: space-between;
   padding: 8px 15px 4px;
+}
+.tbar.center {
+  justify-content: center;
+  padding-top: 14px;
 }
 .tbar .ttl {
   font-size: 15px;
@@ -1505,8 +1639,206 @@ function onBack() {
   cursor: pointer;
   font-family: inherit;
 }
+.formfoot .ff-next:disabled,
+.formfoot .ff-back:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 
-/* Step2 안내 토스트 */
+/* ===== 등록 완료 (10n / 10o) ===== */
+.done-check {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 30px;
+  margin: 6px auto 12px;
+}
+.done-msg {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+.done-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  padding: 14px;
+}
+.done-card .dc-top {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.done-card .hico {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+.done-card .hico svg {
+  width: 20px;
+  height: 20px;
+  stroke: #fff;
+  stroke-width: 1.9;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.done-card .nm {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.done-card .addr {
+  font-size: 11.5px;
+  color: var(--gray-6);
+  font-weight: 600;
+  margin-top: 2px;
+}
+.done-card .dc-divln {
+  border-top: 1px solid var(--line);
+  margin: 11px 0;
+}
+.done-card .term {
+  font-size: 11.5px;
+  color: var(--gray-6);
+  font-weight: 600;
+}
+.done-card .term b {
+  color: var(--ink);
+  font-weight: 800;
+}
+.done-sec-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 9px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--accent);
+}
+.done-sec-h .ci-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.done-sec-h .ci-icon svg {
+  width: 20px;
+  height: 20px;
+  stroke: var(--accent);
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.done-table {
+  background: var(--gray-1);
+  border-radius: var(--r-card);
+  padding: 3px 14px;
+}
+.done-table .r {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+}
+.done-table .r + .r {
+  border-top: 1px solid var(--line);
+}
+.done-table .k {
+  font-size: 13px;
+  color: var(--gray-6);
+  font-weight: 600;
+}
+.done-table .v {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.done-info {
+  background: var(--gray-1);
+  border-radius: var(--r-input);
+  padding: 12px 13px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--gray-6);
+  font-weight: 600;
+  margin-top: 10px;
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+}
+.done-info .ex {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--gray-3);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 800;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+/* (선택)첨부·알림톡 mock 부수 실패 — 등록은 성공, warn(amber) 톤으로 구분 */
+.done-info.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.done-info.warn .ex {
+  background: var(--warn);
+}
+
+/* 완료 화면 하단 액션바 — 완료 / 추가 등록하기 */
+.done-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: #fff;
+}
+.done-foot .df-sub {
+  flex: 0 0 auto;
+  padding: 14px 22px;
+  border-radius: 12px;
+  background: var(--gray-1);
+  color: var(--gray-6);
+  font-weight: 800;
+  font-size: 14px;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.done-foot .df-main {
+  flex: 1;
+  text-align: center;
+  border-radius: 12px;
+  padding: 14px 0;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* 안내 토스트(기본 accent) */
 .next-notice {
   position: absolute;
   left: 16px;
@@ -1520,6 +1852,11 @@ function onBack() {
   font-size: 12.5px;
   font-weight: 700;
   text-align: center;
+}
+/* 저장 실패 — danger(red) */
+.next-notice.err {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 /* 과거 미납 알림톡(mock) 안내 — 즐겨찾기·증빙 계열 warn(amber) 톤으로 구분 */
 .next-notice.mock {
