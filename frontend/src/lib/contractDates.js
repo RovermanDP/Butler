@@ -67,6 +67,26 @@ export function formatShortDate(iso) {
   return `${String(y).slice(2)}.${pad2(m)}.${pad2(d)}`
 }
 
+// 'YYYY-MM-DD' → 'YYYY.MM.DD' (세입자 탭 계약기간 표기: 2020.12.12 ~ 2022.12.11). 형식 아니면 빈 문자열.
+export function formatDotYmd(iso) {
+  const parsed = parseIsoDate(iso)
+  if (!parsed) return ''
+  const { y, m, d } = parsed
+  return `${y}.${pad2(m)}.${pad2(d)}`
+}
+
+// 'YYYY-MM-DD'(예정일)로부터 오늘까지 경과 일수. 미납 D+N 표기용(음수는 0으로 클램프).
+// 데모 시드는 과거 날짜라 큰 값이 나올 수 있으나, Flow E 신규 등록분은 최근 날짜라 정상 범위.
+export function daysOverdue(iso, today = new Date()) {
+  const parsed = parseIsoDate(iso)
+  if (!parsed) return 0
+  const { y, m, d } = parsed
+  const due = new Date(y, m - 1, d)
+  const base = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  const diff = Math.floor((base - due) / 86400000)
+  return diff > 0 ? diff : 0
+}
+
 // 월 그리드(6주 X 7일). 앞쪽 빈칸은 null, 날짜 칸은 'YYYY-MM-DD'.
 // 캘린더 모달이 요일 정렬된 셀을 그리는 데 쓴다.
 export function monthGrid(y, m) {

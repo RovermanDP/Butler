@@ -3,14 +3,19 @@
 // 목록 카드(화면 5) 탭으로 진입. 입주율 도넛·세대구성·이달 신규/만료·총 보증금·임대수익은
 // building_stats View 산출값(stat prop). 상단 좌측 ‹ 뒤로, 우측 알림(벨) 아이콘.
 //
-// 범위 경계(B-1·B-2 한정):
-//  · 4개 탭 헤더(정보·세입자·수납·지출)는 노출하되, 정보 탭만 구현. 세입자/수납/지출 + 스와이프는
-//    다음 세션(Flow B-2, PRD 9.4). → 정보 외 탭은 시각 헤더만(비활성).
-//  · 우측 알림(벨) → Flow D(알림톡) 진입점. 라우팅 결정은 상위(App)가 소유하므로 여기선
-//    open-notifications 이벤트만 emit 한다(Flow D 구현 시 App 핸들러만 화면 전환으로 교체).
-//  · 우하단 고정 FAB(+) → '건물 관리' 시트(화면 9). open-sheet 로 상위(App)에 위임.
-import { computed } from 'vue'
+// 4개 탭(정보·세입자·수납·지출) + 좌우 스와이프 (PRD 4.2 B-2~B-5).
+//  · 정보 탭: stat prop(building_stats View) 사용.
+//  · 세입자·수납·지출 탭: lib/detail 에서 건물별 tenants/contracts/payments/expenses 를 조회해 표시.
+//    → Flow E 등록분(세입자·계약·회차)이 세입자·수납 탭에 그대로 반영된다.
+//  · 우측 알림(벨) → Flow D 진입점(open-notifications). 계약 연장/종료·AI 분담은 미구현 별도 플로우라
+//    teaser/open-repair 이벤트만 올린다(라우팅·안내는 상위 App 이 소유 — 벨과 동일 패턴).
+//  · 우하단 고정 FAB(+) → '건물 관리' 시트(화면 9). 정보·세입자 탭에서만 노출(PRD). open-sheet 로 위임.
+import { ref, computed, onMounted, watch } from 'vue'
 import { formatWon, formatEok } from '../lib/format'
+import { fetchTenantsWithPayments, fetchBuildingExpenses } from '../lib/detail'
+import TenantsTab from '../components/TenantsTab.vue'
+import PaymentsTab from '../components/PaymentsTab.vue'
+import ExpensesTab from '../components/ExpensesTab.vue'
 
 const props = defineProps({
   building: { type: Object, required: true },
@@ -18,7 +23,7 @@ const props = defineProps({
   stat: { type: Object, default: null },
 })
 
-defineEmits(['back', 'open-sheet', 'open-notifications'])
+defineEmits(['back', 'open-sheet', 'open-notifications', 'teaser', 'open-repair', 'open-tenant'])
 
 // 집계 미반영 시에도 화면이 깨지지 않도록 unit_count 기준 기본값을 채운다.
 const s = computed(
@@ -41,6 +46,67 @@ const donutStyle = computed(() => {
   const pct = Number(s.value.occupancy_rate) || 0
   return { background: `conic-gradient(var(--accent) 0 ${pct}%, var(--gray-2) 0)` }
 })
+
+// ── 탭 상태 ──────────────────────────────────────────────
+const TABS = ['정보', '세입자', '수납', '지출']
+const activeTab = ref(0)
+// FAB(+)는 정보·세입자 탭에서만 고정 노출(PRD: "정보 탭·세입자 탭 우하단 고정 FAB").
+const showFab = computed(() => activeTab.value === 0 || activeTab.value === 1)
+
+function goTab(i) {
+  activeTab.value = i
+}
+
+// 좌우 스와이프: |Δx|가 임계값 이상이고 가로 우세일 때만 인접 탭으로 이동(세로 스크롤 방해 금지).
+let tsX = 0
+let tsY = 0
+function onTouchStart(e) {
+  const t = e.changedTouches[0]
+  tsX = t.clientX
+  tsY = t.clientY
+}
+function onTouchEnd(e) {
+  const t = e.changedTouches[0]
+  const dx = t.clientX - tsX
+  const dy = t.clientY - tsY
+  if (Math.abs(dx) < 40 || Math.abs(dx) <= Math.abs(dy)) return
+  if (dx < 0) activeTab.value = Math.min(TABS.length - 1, activeTab.value + 1)
+  else activeTab.value = Math.max(0, activeTab.value - 1)
+}
+
+// ── 상세 데이터(세입자·수납·지출) ────────────────────────
+// 진입(onMounted) 시 1회 병렬 조회. 건물 전환(watch) 시 재조회. Flow E 등록 후 복귀는
+// 컴포넌트 재마운트(onMounted)로 자동 반영된다. 해피패스만 두지 않고 로딩/에러 상태를 제공한다.
+const tenants = ref([])
+const expenses = ref([])
+const loading = ref(false)
+const loadErr = ref('')
+
+async function loadDetail() {
+  loading.value = true
+  loadErr.value = ''
+  try {
+    const [t, e] = await Promise.all([
+      fetchTenantsWithPayments(props.building.id),
+      fetchBuildingExpenses(props.building.id),
+    ])
+    tenants.value = t
+    expenses.value = e
+  } catch (err) {
+    loadErr.value = err.message
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(loadDetail)
+watch(
+  () => props.building.id,
+  () => {
+    activeTab.value = 0
+    loadDetail()
+  },
+)
 </script>
 
 <template>
@@ -61,41 +127,75 @@ const donutStyle = computed(() => {
 
     <div class="month"><span>◀</span>2026년 5월<span>▶</span></div>
 
-    <!-- 4개 탭 헤더: 정보만 구현(B-2). 세입자·수납·지출 + 스와이프는 다음 세션. -->
+    <!-- 4개 탭: 클릭 또는 좌우 스와이프로 전환(정보 ↔ 세입자 ↔ 수납 ↔ 지출). -->
     <div class="tabs">
-      <div class="on">정보</div>
-      <div>세입자</div>
-      <div>수납</div>
-      <div>지출</div>
-    </div>
-
-    <div class="body">
-      <div class="sub-h">임대 현황 <span class="more">({{ s.occupied_units }}/{{ s.unit_count }})</span></div>
-
-      <div class="donut-wrap">
-        <div class="donut" :style="donutStyle">
-          <div class="v"><b>{{ s.occupancy_rate }}%</b><small>입주율</small></div>
-        </div>
-        <div class="legend">
-          <div class="row"><span class="l"><i class="w"></i>월세 세대</span><b>{{ s.wolse_count }}</b></div>
-          <div class="row"><span class="l"><i class="j"></i>전세 세대</span><b>{{ s.jeonse_count }}</b></div>
-          <div class="row"><span class="l"><i class="g"></i>공실</span><b>{{ s.vacant_count }}</b></div>
-        </div>
-      </div>
-
-      <div class="mini2">
-        <div class="chip"><span class="k">이달의 신규 ›</span><b>{{ s.new_this_month }}</b></div>
-        <div class="chip"><span class="k">이달의 만료 ›</span><b>{{ s.expiring_this_month }}</b></div>
-      </div>
-
-      <div class="sumbox">
-        <div class="row"><span class="k">총 보증금</span><span class="v">{{ formatEok(s.deposit_total) }}</span></div>
-        <div class="row"><span class="k">임대수익</span><span class="v">{{ formatWon(s.rental_income) }}</span></div>
+      <div
+        v-for="(t, i) in TABS"
+        :key="t"
+        :class="{ on: activeTab === i }"
+        @click="goTab(i)"
+      >
+        {{ t }}
       </div>
     </div>
 
-    <!-- 고정 FAB(+): .body 의 형제로 .scr 안에 둠 → 본문 스크롤과 무관하게 우하단 고정(PRD). -->
-    <button class="fab" type="button" aria-label="건물·세입자 등록" @click="$emit('open-sheet')">+</button>
+    <div class="body" @touchstart.passive="onTouchStart" @touchend.passive="onTouchEnd">
+      <!-- 정보 탭 -->
+      <template v-if="activeTab === 0">
+        <div class="sub-h">임대 현황 <span class="more">({{ s.occupied_units }}/{{ s.unit_count }})</span></div>
+
+        <div class="donut-wrap">
+          <div class="donut" :style="donutStyle">
+            <div class="v"><b>{{ s.occupancy_rate }}%</b><small>입주율</small></div>
+          </div>
+          <div class="legend">
+            <div class="row"><span class="l"><i class="w"></i>월세 세대</span><b>{{ s.wolse_count }}</b></div>
+            <div class="row"><span class="l"><i class="j"></i>전세 세대</span><b>{{ s.jeonse_count }}</b></div>
+            <div class="row"><span class="l"><i class="g"></i>공실</span><b>{{ s.vacant_count }}</b></div>
+          </div>
+        </div>
+
+        <div class="mini2">
+          <div class="chip"><span class="k">이달의 신규 ›</span><b>{{ s.new_this_month }}</b></div>
+          <div class="chip"><span class="k">이달의 만료 ›</span><b>{{ s.expiring_this_month }}</b></div>
+        </div>
+
+        <div class="sumbox">
+          <div class="row"><span class="k">총 보증금</span><span class="v">{{ formatEok(s.deposit_total) }}</span></div>
+          <div class="row"><span class="k">임대수익</span><span class="v">{{ formatWon(s.rental_income) }}</span></div>
+        </div>
+      </template>
+
+      <!-- 세입자·수납·지출 탭: 공통 로딩/에러 가드 후 각 탭 렌더 -->
+      <template v-else>
+        <p v-if="loading" class="tabstate">불러오는 중…</p>
+        <div v-else-if="loadErr" class="tabstate err">
+          <p>{{ loadErr }}</p>
+          <button type="button" @click="loadDetail">다시 시도</button>
+        </div>
+        <TenantsTab
+          v-else-if="activeTab === 1"
+          :tenants="tenants"
+          :building-name="building.name"
+          @teaser="(label) => $emit('teaser', label)"
+        />
+        <PaymentsTab
+          v-else-if="activeTab === 2"
+          :tenants="tenants"
+          :building-name="building.name"
+          @open-tenant="(t) => $emit('open-tenant', t)"
+          @reload="loadDetail"
+        />
+        <ExpensesTab
+          v-else-if="activeTab === 3"
+          :expenses="expenses"
+          @open-repair="(e) => $emit('open-repair', e)"
+        />
+      </template>
+    </div>
+
+    <!-- 고정 FAB(+): .body 의 형제로 .scr 안에 둠 → 본문 스크롤과 무관하게 우하단 고정(PRD). 정보·세입자 탭만. -->
+    <button v-if="showFab" class="fab" type="button" aria-label="건물·세입자 등록" @click="$emit('open-sheet')">+</button>
 
     <nav class="bnav">
       <div class="on">
@@ -213,6 +313,28 @@ const donutStyle = computed(() => {
   flex: 1;
   overflow-y: auto;
   padding: 4px 15px 14px;
+}
+/* 세입자·수납·지출 탭 로딩/에러 상태(해피패스만 두지 않기). */
+.tabstate {
+  text-align: center;
+  color: var(--gray-4);
+  font-size: 12.5px;
+  padding: 44px 0;
+}
+.tabstate.err {
+  color: var(--danger);
+}
+.tabstate.err button {
+  margin-top: 10px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--r-button);
+  padding: 9px 18px;
+  font-weight: 800;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
 }
 .sub-h {
   font-size: 14px;
