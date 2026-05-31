@@ -5,7 +5,9 @@ import EmptyState from './views/EmptyState.vue'
 import BuildingRegister from './views/BuildingRegister.vue'
 import BuildingList from './views/BuildingList.vue'
 import BuildingDetail from './views/BuildingDetail.vue'
+import TenantRegister from './views/TenantRegister.vue'
 import BuildingManageSheet from './components/BuildingManageSheet.vue'
+import TenantMethodSheet from './components/TenantMethodSheet.vue'
 
 // Flow A — 온보딩·건물 등록 (PRD 4.1) + Flow B-1·B-2 — 목록·정보 탭 (PRD 4.2).
 // 빈 상태 → 건물 관리 모달 → (세입자 차단 분기) → 건물 등록 → 목록(화면 5).
@@ -14,7 +16,7 @@ import BuildingManageSheet from './components/BuildingManageSheet.vue'
 //
 // 화면 라우팅: 'loading' → 조회 후 건물 있으면 'list', 없으면 'empty'.
 //   'list' 카드 클릭 → 'detail'(선택 건물 정보 탭). buildings 배열이 목록/가드/카운트 단일 소스.
-const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'detail' | 'register' | 'error'
+const screen = ref('loading') // 'loading' | 'empty' | 'list' | 'detail' | 'register' | 'tenant-register' | 'error'
 const buildings = ref([])
 const stats = ref({}) // building_id → 집계 지표(목록 카드·정보 탭 공용)
 const selectedBuilding = ref(null) // 정보 탭(화면 4) 대상 건물
@@ -24,6 +26,9 @@ const loadError = ref('')
 const tenantEnabled = computed(() => buildings.value.length > 0)
 
 const sheetOpen = ref(false)
+
+// Flow E — 세입자 등록 방법 선택 시트(화면 10). '건물 관리' 시트에서 세입자 등록 활성 탭 시 등장.
+const methodSheetOpen = ref(false)
 
 // 등록 직후 목록 상단 성공 배너
 const flash = ref('')
@@ -97,8 +102,30 @@ function onSelectTenant() {
     showToast('❗ 등록된 건물이 없습니다. 건물을 등록해주세요', 'error')
     return
   }
-  // 화면 9 — 세입자 등록 활성(Flow E 진입점). Flow E 미구현이라 여기선 안내만 한다.
-  showToast('세입자 등록은 다음 단계에서 제공됩니다', 'info')
+  // 화면 9 → 화면 10 — 세입자 등록 활성(Flow E 진입점). 방법 선택 시트를 연다.
+  sheetOpen.value = false
+  tenantTapped.value = false
+  toast.value = ''
+  clearTimeout(toastTimer)
+  methodSheetOpen.value = true
+}
+
+// 화면 10 — 직접 등록하기 → Step1 화면 진입. (계약서 추천은 teaser, 6.3 범위 외)
+function onSelectDirect() {
+  methodSheetOpen.value = false
+  screen.value = 'tenant-register'
+}
+
+function onSelectRecommend() {
+  methodSheetOpen.value = false
+  notice.value = '임대차 계약서 추천(자동 추출)은 추후 제공 예정입니다'
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => (notice.value = ''), 2600)
+}
+
+// Step1 [뒤로]/상단 ‹ — 진입 직전 화면(정보 탭 또는 목록)으로 복귀.
+function backFromTenant() {
+  screen.value = selectedBuilding.value ? 'detail' : 'list'
 }
 
 // 목록 카드 탭 → 단일 건물 정보 탭(화면 4) 진입.
@@ -175,6 +202,12 @@ function backToList() {
       @open-sheet="openSheet"
       @open-notifications="openNotifications"
     />
+    <TenantRegister
+      v-else-if="screen === 'tenant-register'"
+      :buildings="buildings"
+      :preselect-building-id="selectedBuilding?.id ?? ''"
+      @back="backFromTenant"
+    />
 
     <BuildingManageSheet
       :open="sheetOpen"
@@ -185,6 +218,14 @@ function backToList() {
       @close="closeSheet"
       @select-building="onSelectBuilding"
       @select-tenant="onSelectTenant"
+    />
+
+    <!-- 화면 10 — 세입자 등록 방법 선택(직접 등록 / 계약서 추천 teaser) -->
+    <TenantMethodSheet
+      :open="methodSheetOpen"
+      @close="methodSheetOpen = false"
+      @select-direct="onSelectDirect"
+      @select-recommend="onSelectRecommend"
     />
 
     <!-- 목록 화면에서도 FAB 로 추가 등록 가능 -->
