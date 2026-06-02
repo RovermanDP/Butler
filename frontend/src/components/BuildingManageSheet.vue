@@ -43,16 +43,15 @@ defineEmits(['close', 'select-building', 'select-tenant'])
         <div class="opts">
           <button class="opt active" type="button" @click="$emit('select-building')">
             <div class="oic">🏢<span class="pl">+</span></div>
-            <div class="ol">건물등록</div>
+            <div class="ol">건물 등록</div>
           </button>
           <button
             class="opt"
-            :class="[tenantEnabled ? 'active enabled-new' : 'dis', { tapped: !tenantEnabled && tenantTapped }]"
+            :class="[tenantEnabled ? 'active' : 'dis', { tapped: !tenantEnabled && tenantTapped }]"
             type="button"
             @click="$emit('select-tenant')"
           >
-            <span v-if="tenantEnabled" class="okmark">✓ 지금 등록 가능</span>
-            <span v-else-if="tenantTapped" class="taptag">탭함</span>
+            <span v-if="tenantTapped" class="taptag">탭함</span>
             <div class="oic">👥<span class="pl">+</span></div>
             <div class="ol">세입자 등록</div>
           </button>

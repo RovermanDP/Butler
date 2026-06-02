@@ -94,22 +94,15 @@ const total = computed(() => props.expenses.reduce((s, e) => s + Number(e.amount
 /* 수리비(AI 분담) 행만 강조 카드 + 상단 뱃지. */
 .erow.repair {
   position: relative;
-  border: 1px solid var(--accent);
-  border-radius: 12px;
-  padding: 11px 11px;
-  margin: 6px 0;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 11px 0;
+  margin: 0;
   cursor: pointer;
 }
 .erow .badge {
-  position: absolute;
-  top: -9px;
-  right: 11px;
-  font-size: 9px;
-  font-weight: 800;
-  color: #fff;
-  background: var(--accent);
-  padding: 2px 7px;
-  border-radius: 7px;
+  display: none;
 }
 .erow .top {
   display: flex;
