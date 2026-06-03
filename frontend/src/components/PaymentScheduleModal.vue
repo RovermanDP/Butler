@@ -370,4 +370,21 @@ function statusClass(status) {
   background: var(--gray-3);
   cursor: not-allowed;
 }
+.lease-chip {
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 4px 8px;
+  border-radius: 9px;
+  white-space: nowrap;
+}
+
+.lease-chip.wolse {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.lease-chip.jeonse {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
 </style>

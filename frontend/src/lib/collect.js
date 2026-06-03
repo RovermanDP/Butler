@@ -6,7 +6,10 @@ import { daysOverdue } from './contractDates'
 // 회차 상태 → CSS 클래스. CLAUDE.md 상태색: 대기=gray / 미납=danger / 완납=ok.
 const STATUS_CLASS = { 대기: 'wait', 미납: 'miss', 완납: 'paid' }
 export function statusClass(status) {
-  return STATUS_CLASS[status] ?? 'wait'
+  if (status === '완납') return 'ok'
+  if (status === '미납') return 'miss'
+  if (status === '대기') return 'wait'
+  return ''
 }
 
 // 수납 현황 대상 세입자: 회차(payments)가 있고 + 월세(전세 제외).

@@ -1,14 +1,9 @@
 <script setup>
-// 공유 회차 리스트 — 단일 세입자의 회차(대기·미납·완납)를 표로 렌더한다.
-// 화면 6c(세입자 상세 · 수납 sub-tab, B-3에서 구현)가 이 컴포넌트를 사용한다.
-// ⚠ 건물 수납 탭(PaymentsTab.vue=현황 목록)과는 역할이 다르다 — 여기는 단일 세입자 회차 리스트.
-// 상태색: 대기=gray / 미납=danger(D+n) / 완납=ok(💳 강조). (CLAUDE.md)
 import { formatWon } from '../lib/format'
 import { formatShortDate, daysOverdue } from '../lib/contractDates'
 import { statusClass } from '../lib/collect'
 
 defineProps({
-  // 회차 목록(round_no 내림차순 = 최근 회차 먼저, 와이어프레임 9→6).
   payments: { type: Array, default: () => [] },
 })
 </script>
@@ -37,24 +32,30 @@ defineProps({
   gap: 10px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
+  background: #fff;
 }
 .hist .h .st {
   font-size: 10px;
   font-weight: 700;
   padding: 3px 8px;
   border-radius: 7px;
+  flex: 0 0 auto;
 }
+/* 대기: 회색 테두리 박스 */
 .hist .h .st.wait {
   background: var(--gray-1);
   color: var(--gray-5);
+  border: 1px solid var(--gray-3);
 }
+/* 미납: 빨간 배경 */
 .hist .h .st.miss {
   background: var(--danger-soft);
   color: var(--danger);
 }
-.hist .h .st.paid {
-  background: var(--ok-soft);
-  color: var(--ok);
+/* 완납: 초록 배경, 흰 글씨 */
+.hist .h .st.ok {
+  background: var(--ok);
+  color: #fff;
 }
 .hist .h .rd {
   font-size: 12px;
@@ -71,6 +72,7 @@ defineProps({
   display: block;
   color: var(--ink-mute);
 }
+/* 완납 금액: 기본 ink 유지 (배경 흰색이므로 초록 불필요) */
 .hist .h .am.active b {
   color: var(--ink);
 }

@@ -43,9 +43,21 @@ const s = computed(
     },
 )
 
+// 도넛 차트: 월세(accent·파란색) + 전세(amber·황금색) + 공실(gray) 3색 분할
+// conic-gradient 순서: 월세 → 전세 → 공실(나머지)
 const donutStyle = computed(() => {
-  const pct = Number(s.value.occupancy_rate) || 0
-  return { background: `conic-gradient(var(--accent) 0 ${pct}%, var(--gray-2) 0)` }
+  const total = Number(s.value.unit_count) || 1
+  const wolsePct  = Math.round((Number(s.value.wolse_count)  || 0) / total * 100)
+  const jeonsePct = Math.round((Number(s.value.jeonse_count) || 0) / total * 100)
+  const wolseEnd  = wolsePct
+  const jeonseEnd = wolsePct + jeonsePct
+  return {
+    background: `conic-gradient(
+      var(--accent)       0 ${wolseEnd}%,
+      var(--jeonse-color) ${wolseEnd}% ${jeonseEnd}%,
+      var(--gray-2)       ${jeonseEnd}% 100%
+    )`,
+  }
 })
 
 // ── 탭 상태 ──────────────────────────────────────────────
@@ -76,8 +88,6 @@ function onTouchEnd(e) {
 }
 
 // ── 상세 데이터(세입자·수납·지출) ────────────────────────
-// 진입(onMounted) 시 1회 병렬 조회. 건물 전환(watch) 시 재조회. Flow E 등록 후 복귀는
-// 컴포넌트 재마운트(onMounted)로 자동 반영된다. 해피패스만 두지 않고 로딩/에러 상태를 제공한다.
 const tenants = ref([])
 const expenses = ref([])
 const loading = ref(false)
@@ -105,17 +115,14 @@ watch(
   () => props.building.id,
   () => {
     activeTab.value = 0
-    detailTenant.value = null // 건물 전환 시 열린 상세 닫기
+    detailTenant.value = null
     loadDetail()
   },
 )
 
 // ── 세입자 상세 오버레이(화면 6a/6b/6c + 6d) ─────────────
-// 세입자 목록(화면 6) 행 탭 또는 수납 탭(화면 7) 세입자 행 탭으로 진입.
-// 이 컴포넌트가 이미 조회해 둔 tenants(계약·회차·알림톡)를 그대로 넘겨 재조회를 피한다(OSoT).
-// 4탭 상태/스크롤을 보존하려고 App 레벨 화면이 아니라 여기서 오버레이로 소유한다.
-const detailTenant = ref(null) // 열린 세입자(상세) | null
-const detailTab = ref('정보') // 진입 시 초기 sub-tab('정보' | '수납')
+const detailTenant = ref(null)
+const detailTab = ref('정보')
 
 function openTenantDetail(tenant, tab = '정보') {
   detailTenant.value = tenant
@@ -124,7 +131,6 @@ function openTenantDetail(tenant, tab = '정보') {
 function closeTenantDetail() {
   detailTenant.value = null
 }
-// 삭제 완료 → 상세 닫고 목록 재조회(삭제된 세입자 제거 반영).
 function onTenantDeleted() {
   detailTenant.value = null
   loadDetail()
@@ -132,7 +138,7 @@ function onTenantDeleted() {
 </script>
 
 <template>
-  <!-- 세입자 상세(6a/6b/6c) 오버레이: 열려 있으면 4탭 대신 상세를 전체 화면으로 보여준다. -->
+  <!-- 세입자 상세(6a/6b/6c) 오버레이 -->
   <TenantDetail
     v-if="detailTenant"
     :tenant="detailTenant"
@@ -160,7 +166,7 @@ function onTenantDeleted() {
 
     <div class="month"><span>◀</span>2026년 5월<span>▶</span></div>
 
-    <!-- 4개 탭: 클릭 또는 좌우 스와이프로 전환(정보 ↔ 세입자 ↔ 수납 ↔ 지출). -->
+    <!-- 4개 탭 -->
     <div class="tabs">
       <div
         v-for="(t, i) in TABS"
@@ -183,6 +189,7 @@ function onTenantDeleted() {
           </div>
           <div class="legend">
             <div class="row"><span class="l"><i class="w"></i>월세 세대</span><b>{{ s.wolse_count }}</b></div>
+            <!-- 전세: amber 색상 dot -->
             <div class="row"><span class="l"><i class="j"></i>전세 세대</span><b>{{ s.jeonse_count }}</b></div>
             <div class="row"><span class="l"><i class="g"></i>공실</span><b>{{ s.vacant_count }}</b></div>
           </div>
@@ -199,7 +206,7 @@ function onTenantDeleted() {
         </div>
       </template>
 
-      <!-- 세입자·수납·지출 탭: 공통 로딩/에러 가드 후 각 탭 렌더 -->
+      <!-- 세입자·수납·지출 탭 -->
       <template v-else>
         <p v-if="loading" class="tabstate">불러오는 중…</p>
         <div v-else-if="loadErr" class="tabstate err">
@@ -228,7 +235,7 @@ function onTenantDeleted() {
       </template>
     </div>
 
-    <!-- 고정 FAB(+): .body 의 형제로 .scr 안에 둠 → 본문 스크롤과 무관하게 우하단 고정(PRD). 정보·세입자 탭만. -->
+    <!-- 고정 FAB(+) -->
     <button v-if="showFab" class="fab" type="button" aria-label="건물·세입자 등록" @click="$emit('open-sheet')">+</button>
 
     <nav class="bnav">
@@ -257,7 +264,9 @@ function onTenantDeleted() {
 </template>
 
 <style scoped>
+/* 전세 색상 토큰 — 와이어프레임 기준 amber/gold 계열 */
 .scr {
+  --jeonse-color: #D97706; /* amber-600 */
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -348,7 +357,6 @@ function onTenantDeleted() {
   overflow-y: auto;
   padding: 4px 15px 14px;
 }
-/* 세입자·수납·지출 탭 로딩/에러 상태(해피패스만 두지 않기). */
 .tabstate {
   text-align: center;
   color: var(--gray-4);
@@ -443,12 +451,12 @@ function onTenantDeleted() {
   border-radius: 50%;
   display: inline-block;
 }
-/* 월세=accent, 전세=accent-deep(같은 단일 accent 계열의 음영으로 구분), 공실=gray. */
+/* 월세 = accent(파란색), 전세 = amber(황금색), 공실 = gray */
 .legend .row .l i.w {
   background: var(--accent);
 }
 .legend .row .l i.j {
-  background: var(--accent-deep);
+  background: var(--jeonse-color); /* amber — 도넛 전세 구간과 동일 */
 }
 .legend .row .l i.g {
   background: var(--gray-3);
@@ -505,7 +513,6 @@ function onTenantDeleted() {
   font-size: 12.5px;
   font-weight: 800;
 }
-/* 고정 FAB — 빈 상태/목록 FAB 와 동일 스펙(펄스 없음). bnav 위 우하단. */
 .fab {
   position: absolute;
   right: 15px;

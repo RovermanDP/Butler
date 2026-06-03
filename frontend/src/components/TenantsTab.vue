@@ -1,10 +1,4 @@
 <script setup>
-// 화면 6 — 건물 상세 · 세입자 탭 = 세입자 '목록' (PRD 4.2 B-3).
-// 기존 인라인 카드(메모·계약·금액)는 세입자 상세(TenantDetail.vue)로 이전했다.
-// 여기는 호실별 목록 + 검색 + 전체▽ 상태필터(클라이언트) + 연동하기(teaser)만 담당한다.
-//   · 행 탭 → open-tenant(상위 BuildingDetail 이 세입자 상세 오버레이를 연다).
-//   · 검색: 이름·호실 substring(클라이언트). 상태필터: primary.status(계약중/만료/종료).
-// 표시만 담당(데이터 in / 이벤트 out). phone 보유 세입자만 내려오므로 채움 데이터는 이미 걸러짐.
 import { ref, computed } from 'vue'
 import { formatShortDate } from '../lib/contractDates'
 
@@ -15,7 +9,6 @@ const props = defineProps({
 
 const emit = defineEmits(['open-tenant', 'teaser'])
 
-// ── 검색 · 상태 필터(클라이언트) ─────────────────────────
 const query = ref('')
 const STATUS_OPTS = ['전체', '계약중', '만료', '종료']
 const statusFilter = ref('전체')
@@ -26,27 +19,49 @@ function pickFilter(s) {
   filterOpen.value = false
 }
 
+// 호수 자연 정렬 키: "112호" → [112, "호"] 형태로 숫자 구간은 숫자로 비교
+function unitSortKey(unitNo) {
+  return (unitNo ?? '')
+    .split(/(\d+)/)
+    .map((seg) => (/^\d+$/.test(seg) ? Number(seg) : seg))
+}
+function cmpUnit(a, b) {
+  const ka = unitSortKey(a)
+  const kb = unitSortKey(b)
+  for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+    const x = ka[i] ?? ''
+    const y = kb[i] ?? ''
+    if (typeof x === 'number' && typeof y === 'number') {
+      if (x !== y) return x - y
+    } else {
+      if (String(x) !== String(y)) return String(x) < String(y) ? -1 : 1
+    }
+  }
+  return 0
+}
+
 const visible = computed(() => {
   const q = query.value.trim().toLowerCase()
-  return props.tenants.filter((t) => {
+  const filtered = props.tenants.filter((t) => {
     if (statusFilter.value !== '전체' && t.primary?.status !== statusFilter.value) return false
     if (!q) return true
     const hay = `${t.name ?? ''} ${t.primary?.unit_no ?? ''}`.toLowerCase()
     return hay.includes(q)
   })
+  // 호수 기준 오름차순 정렬 (101호, 102호, ... 112호 순)
+  return [...filtered].sort((a, b) =>
+    cmpUnit(a.primary?.unit_no, b.primary?.unit_no)
+  )
 })
 
-// 신규 태그: 계약 시작일이 당월이면 '신규'(building_stats new_this_month 와 동일 기준).
-const now = new Date()
-const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+const DEMO_YM = '2026-05'
 function isNew(t) {
-  return String(t.primary?.contract_start ?? '').slice(0, 7) === ym
+  return String(t.primary?.contract_start ?? '').slice(0, 7) === DEMO_YM
 }
 </script>
 
 <template>
   <div class="tenants">
-    <!-- 검색바 -->
     <label class="tn-search">
       <input v-model="query" type="text" placeholder="세입자를 검색해보세요" />
       <span class="search-inline" aria-hidden="true">
@@ -56,7 +71,6 @@ function isNew(t) {
       </span>
     </label>
 
-    <!-- 전체▽ 상태필터 · 연동하기(teaser) -->
     <div class="tn-listhead">
       <span class="tn-filter" @click="filterOpen = !filterOpen">
         {{ statusFilter }} ⌄
@@ -75,7 +89,6 @@ function isNew(t) {
       <button class="tn-link" type="button" @click="emit('teaser', '연동하기')">☑ 연동하기</button>
     </div>
 
-    <!-- 목록 -->
     <p v-if="!tenants.length" class="empty">등록된 세입자가 없습니다.</p>
     <p v-else-if="!visible.length" class="empty">검색 결과가 없습니다.</p>
 
@@ -95,8 +108,8 @@ function isNew(t) {
           <span class="term">
             {{ formatShortDate(t.primary.contract_start) }}~{{ formatShortDate(t.primary.contract_end) }}
           </span>
-          <span class="tag" :class="t.primary.lease_type === '전세' ? 'js' : 'wm'">
-            {{ t.primary.lease_type }}
+          <span class="lease-chip" :class="t.primary?.lease_type === '전세' ? 'jeonse' : 'wolse'">
+            {{ t.primary?.lease_type }}
           </span>
           <span v-if="isNew(t)" class="tag new">신규</span>
         </span>
@@ -113,7 +126,6 @@ function isNew(t) {
   font-size: 12.5px;
   padding: 40px 0;
 }
-/* 검색바 */
 .tn-search {
   background: var(--gray-1);
   border-radius: 10px;
@@ -133,12 +145,8 @@ function isNew(t) {
   font-weight: 500;
   color: var(--ink);
 }
-.tn-search input::placeholder {
-  color: var(--ink-mute);
-}
-.tn-search input:focus {
-  outline: none;
-}
+.tn-search input::placeholder { color: var(--ink-mute); }
+.tn-search input:focus { outline: none; }
 .tn-search .search-inline svg {
   width: 18px;
   height: 18px;
@@ -147,7 +155,6 @@ function isNew(t) {
   stroke-width: 1.8;
   stroke-linecap: round;
 }
-/* 필터 헤더 */
 .tn-listhead {
   display: flex;
   align-items: center;
@@ -189,10 +196,7 @@ function isNew(t) {
   border-radius: 7px;
   cursor: pointer;
 }
-.tn-menu button.on {
-  background: var(--accent-soft);
-  color: var(--accent-deep);
-}
+.tn-menu button.on { background: var(--accent-soft); color: var(--accent-deep); }
 .tn-link {
   font-size: 11px;
   font-weight: 800;
@@ -204,7 +208,6 @@ function isNew(t) {
   font-family: inherit;
   cursor: pointer;
 }
-/* 호실별 목록 행 */
 .tn-row {
   display: flex;
   align-items: center;
@@ -228,43 +231,20 @@ function isNew(t) {
   flex-direction: column;
   gap: 5px;
 }
-.tn-row .info .nm {
-  font-size: 14px;
-  font-weight: 800;
-  color: var(--ink);
-}
+.tn-row .info .nm { font-size: 14px; font-weight: 800; color: var(--ink); }
 .tn-row .info .meta {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
 }
-.tn-row .info .term {
-  font-size: 10.5px;
-  color: var(--ink-mute);
-  font-weight: 600;
-}
-.tn-row .arr {
-  flex: 0 0 auto;
-  color: var(--gray-3);
-  font-size: 15px;
-}
+.tn-row .info .term { font-size: 10.5px; color: var(--ink-mute); font-weight: 600; }
+.tn-row .arr { flex: 0 0 auto; color: var(--gray-3); font-size: 15px; }
 .tag {
   font-size: 9.5px;
   font-weight: 800;
   padding: 2px 7px;
   border-radius: 7px;
 }
-.tag.wm {
-  background: var(--accent-soft);
-  color: var(--accent-deep);
-}
-.tag.js {
-  background: var(--warn-soft);
-  color: var(--warn);
-}
-.tag.new {
-  background: var(--ok-soft);
-  color: var(--ok);
-}
+.tag.new { background: var(--ok-soft); color: var(--ok); }
 </style>

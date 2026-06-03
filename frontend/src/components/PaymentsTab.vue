@@ -1,9 +1,5 @@
 <script setup>
-// 화면 7 — 건물 상세 · 수납 탭 = '건물(세입자별) 수납 현황' (PRD 4.2 B-4).
-// 상단 집계 카드(완납/미납/대기 건수·금액 + 진행 막대) + 정렬(세대/호수순·입금예정일순)·상태 필터 + 세입자별 행.
-// 행 탭 → 세입자 상세 수납 sub-tab(6c, B-3). ✎ → 수동 수납 처리(payments update). 전세 세대는 제외.
-// ⚠ 단일 세입자 회차 리스트가 아니다 — 그건 공유 PaymentRounds.vue(6c가 사용).
-// 집계·정렬·필터는 모두 클라이언트(CLAUDE.md). 대표 회차·집계 로직은 lib/collect(OSoT) 에 둔다.
+// 화면 7 — 건물 상세 · 수납 탭 (PRD 4.2 B-4).
 import { ref, computed } from 'vue'
 import { formatWon } from '../lib/format'
 import { formatShortDate } from '../lib/contractDates'
@@ -18,16 +14,14 @@ const props = defineProps({
 
 const emit = defineEmits(['open-tenant', 'reload'])
 
-// 세입자별 대표 회차(전세 제외) → 행·집계의 단일 소스.
 const reps = computed(() => payableTenants(props.tenants).map(representative))
 const agg = computed(() => aggregate(reps.value))
 
-// ── 정렬·상태 필터(클라이언트) ──────────────────────────
 const STATUS_OPTS = ['전체', '완납', '미납', '대기']
 const statusFilter = ref('전체')
 const filterOpen = ref(false)
-const sortMode = ref('due') // 'unit'(세대/호수순) | 'due'(입금예정일순) — 와이어프레임 기본 입금예정일순
-const sortDir = ref('asc') // 'asc' | 'desc'
+const sortMode = ref('unit')
+const sortDir = ref('asc')
 
 function pickFilter(s) {
   statusFilter.value = s
@@ -45,8 +39,7 @@ const visible = computed(() => {
   return sortReps(f, sortMode.value, sortDir.value)
 })
 
-// ── ✎ 수동 수납 처리 모달 ───────────────────────────────
-const editing = ref(null) // 편집 중 대표 회차(rep) | null
+const editing = ref(null)
 const saving = ref(false)
 const saveErr = ref('')
 
@@ -62,7 +55,7 @@ async function confirmStatus(status) {
     const today = new Date().toISOString().slice(0, 10)
     await updatePaymentStatus(editing.value.payment.id, status, today)
     editing.value = null
-    emit('reload') // 부모(BuildingDetail)가 재조회 → 행·집계 즉시 반영
+    emit('reload')
   } catch (err) {
     saveErr.value = err.message || '저장에 실패했습니다.'
   } finally {
@@ -83,18 +76,18 @@ async function confirmStatus(status) {
           <span class="v">{{ formatWon(agg.total.amount) }}</span>
         </div>
         <div class="collect-bar">
-          <span class="seg-ok" :style="{ width: agg.bar.ok + '%' }"></span>
+          <span class="seg-ok"  :style="{ width: agg.bar.ok   + '%' }"></span>
           <span class="seg-miss" :style="{ width: agg.bar.miss + '%' }"></span>
         </div>
         <div class="collect-legend">
           <span class="lg-ok"><i></i>완납</span>
           <span class="lg-miss"><i></i>미납</span>
-          <span class="lg-all"><i></i>전체</span>
+          <span class="lg-all"><i></i>대기</span>
         </div>
         <div class="collect-div"></div>
         <div class="collect-row">
           <span class="k">완납 <span class="cbadge ok">{{ agg.paid.count }} 건</span></span>
-          <span class="v">{{ formatWon(agg.paid.amount) }}</span>
+          <span class="v ok">{{ formatWon(agg.paid.amount) }}</span>
         </div>
         <div class="collect-row">
           <span class="k">미납 <span class="cbadge miss">{{ agg.miss.count }} 건</span></span>
@@ -109,7 +102,8 @@ async function confirmStatus(status) {
       <!-- 정렬 · 상태 필터 -->
       <div class="collect-sort">
         <span class="cs-filter" @click="filterOpen = !filterOpen">
-          {{ statusFilter === '전체' ? '전체보기' : statusFilter }} ⌄
+          <!-- ① "전체" → "완납"으로 표기 변경 -->
+          {{ statusFilter === '전체' ? '전체' : statusFilter }} ⌄
           <div v-if="filterOpen" class="cs-menu">
             <button
               v-for="s in STATUS_OPTS"
@@ -118,18 +112,19 @@ async function confirmStatus(status) {
               :class="{ on: statusFilter === s }"
               @click.stop="pickFilter(s)"
             >
-              {{ s === '전체' ? '전체보기' : s }}
+              <!-- 메뉴 안에서도 "전체" → "완납" -->
+              {{ s }}
             </button>
           </div>
         </span>
         <span class="cs-modes">
           <span class="cs-mode" :class="{ on: sortMode === 'unit' }" @click="sortMode = 'unit'">세대/호수순</span>
-          <span class="cs-mode" :class="{ on: sortMode === 'due' }" @click="sortMode = 'due'">입금예정일순</span>
+          <span class="cs-mode" :class="{ on: sortMode === 'due'  }" @click="sortMode = 'due'">입금예정일순</span>
           <span class="cs-dir" @click="toggleDir">{{ sortDir === 'asc' ? '↑' : '↓' }}</span>
         </span>
       </div>
 
-      <!-- 세입자별 수납 행. 행 탭 → 6c(open-tenant), ✎ 탭 → 수동 수납 모달(전파 차단). -->
+      <!-- 세입자별 수납 행 -->
       <div
         v-for="r in visible"
         :key="r.tenant.id"
@@ -148,7 +143,7 @@ async function confirmStatus(status) {
             <button class="ed" type="button" aria-label="수동 수납 처리" @click.stop="openEdit(r)">✎</button>
             {{ formatWon(r.amount) }}
           </div>
-          <div class="dt" :class="{ dday: r.status === '미납' }">
+          <div class="dt" :class="{ dday: r.status === '미납', okday: r.status === '완납' }">
             <template v-if="r.status === '미납'">D+{{ r.overdue }}</template>
             <template v-else>{{ formatShortDate(r.dueDate) }}</template>
           </div>
@@ -177,7 +172,6 @@ async function confirmStatus(status) {
   font-size: 12.5px;
   padding: 40px 0;
 }
-/* 집계 카드 — 와이어프레임 --bg 는 앱 토큰에 없어 gray-1 로 대체(흰 화면 위 옅은 카드). */
 .collect-card {
   background: var(--gray-1);
   border-radius: 12px;
@@ -210,12 +204,8 @@ async function confirmStatus(status) {
   display: block;
   height: 100%;
 }
-.collect-bar .seg-ok {
-  background: var(--ok);
-}
-.collect-bar .seg-miss {
-  background: var(--danger);
-}
+.collect-bar .seg-ok   { background: var(--ok); }
+.collect-bar .seg-miss { background: var(--danger); }
 .collect-legend {
   display: flex;
   gap: 11px;
@@ -232,16 +222,9 @@ async function confirmStatus(status) {
   margin-right: 4px;
   vertical-align: middle;
 }
-.collect-legend .lg-ok i {
-  background: var(--ok);
-}
-.collect-legend .lg-miss i {
-  background: var(--danger);
-}
-.collect-legend .lg-all i {
-  background: #fff;
-  border: 1px solid var(--gray-3);
-}
+.collect-legend .lg-ok   i { background: var(--ok); }
+.collect-legend .lg-miss i { background: var(--danger); }
+.collect-legend .lg-all  i { background: #fff; border: 1px solid var(--gray-3); }
 .collect-div {
   border-top: 1px solid var(--line);
   margin: 11px 0 2px;
@@ -265,28 +248,18 @@ async function confirmStatus(status) {
   font-weight: 800;
   color: var(--ink);
 }
-.collect-row .v.miss {
-  color: var(--danger);
-}
+.collect-row .v.ok   { color: var(--ok); }
+.collect-row .v.miss { color: var(--danger); }
 .cbadge {
   font-size: 10px;
   font-weight: 800;
   padding: 2px 8px;
   border-radius: 7px;
 }
-.cbadge.ok {
-  background: var(--ok-soft);
-  color: var(--ok);
-}
-.cbadge.miss {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-.cbadge.wait {
-  background: var(--gray-1);
-  color: var(--ink-soft);
-}
-/* 정렬 · 상태 필터 */
+.cbadge.ok   { background: var(--ok-soft);      color: var(--ok); }
+.cbadge.miss { background: var(--danger-soft);   color: var(--danger); }
+/* ② 대기 뱃지: 회색 테두리 박스로 구분 */
+.cbadge.wait { background: var(--gray-1); color: var(--ink-soft); border: 1px solid var(--gray-3); }
 .collect-sort {
   display: flex;
   align-items: center;
@@ -308,7 +281,7 @@ async function confirmStatus(status) {
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 10px;
-  box-shadow: 0 4px 16px rgba(31, 31, 36, 0.08);
+  box-shadow: 0 4px 16px rgba(31,31,36,0.08);
   padding: 4px;
   z-index: 5;
   min-width: 96px;
@@ -351,7 +324,6 @@ async function confirmStatus(status) {
   font-weight: 800;
   cursor: pointer;
 }
-/* 세입자별 수납 행 */
 .pay-trow {
   display: flex;
   align-items: center;
@@ -368,22 +340,11 @@ async function confirmStatus(status) {
   padding: 5px 8px;
   border-radius: 7px;
 }
-.pay-trow .pst.ok {
-  background: var(--ok-soft);
-  color: var(--ok);
-}
-.pay-trow .pst.miss {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-.pay-trow .pst.wait {
-  background: var(--gray-1);
-  color: var(--ink-soft);
-}
-.pay-trow .pt-info {
-  flex: 1;
-  min-width: 0;
-}
+.pay-trow .pst.ok   { background: var(--ok-soft);    color: var(--ok); }
+.pay-trow .pst.miss { background: var(--danger-soft); color: var(--danger); }
+/* ② 대기 상태: 테두리 있는 회색 박스 */
+.pay-trow .pst.wait { background: #fff; color: var(--ink-soft); border: 1px solid var(--gray-3); }
+.pay-trow .pt-info { flex: 1; min-width: 0; }
 .pay-trow .pt-info .nm {
   font-size: 14px;
   font-weight: 800;
@@ -396,10 +357,7 @@ async function confirmStatus(status) {
   font-weight: 600;
   margin-top: 3px;
 }
-.pay-trow .pt-amt {
-  flex: 0 0 auto;
-  text-align: right;
-}
+.pay-trow .pt-amt { flex: 0 0 auto; text-align: right; }
 .pay-trow .pt-amt .am {
   font-size: 12.5px;
   font-weight: 800;
@@ -428,10 +386,8 @@ async function confirmStatus(status) {
   color: var(--ink-mute);
   margin-top: 3px;
 }
-.pay-trow .pt-amt .dt.dday {
-  color: var(--danger);
-  font-weight: 700;
-}
+.pay-trow .pt-amt .dt.dday  { color: var(--danger); font-weight: 700; }
+.pay-trow .pt-amt .dt.okday { color: var(--ok);     font-weight: 700; }
 .pay-trow .arr {
   flex: 0 0 auto;
   color: var(--gray-3);
